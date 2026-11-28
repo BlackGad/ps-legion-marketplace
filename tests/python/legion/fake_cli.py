@@ -82,7 +82,9 @@ def overseer(tool: str, args: list[str], folder: Path, source: str) -> int:
     if mode == "1":
         legion = ["uvx", "--isolated", "--from", f"{Path(source) / 'plugins/legion'}[mcp]", "legion"]
     copilot = ["--session-id", FAKE_SESSION] if tool == "copilot" else []
-    subprocess.run([*legion, "update", "--self", "--yes", "--source", source, *copilot], check=True)
+    request = subprocess.run([*legion, "update", "--self", "--yes", "--source", source, *copilot], check=False, capture_output=True, text=True)
+    (repo / "self-update-request.txt").write_text(request.stdout + request.stderr, encoding="utf-8")
+    request.check_returncode()
     time.sleep(60)
     return 0
 

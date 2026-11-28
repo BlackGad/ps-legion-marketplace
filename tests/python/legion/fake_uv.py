@@ -22,6 +22,9 @@ def main(args: list[str]) -> int:
     if os.environ.get("FAKE_UV_FAIL") == verb:
         if verb == "install" and os.environ.get("FAKE_OVERSEER_REQUEST"):
             tool = Path(os.environ["UV_TOOL_DIR"]) / "legion"
+            scratch = Path(os.environ["LEGION_HOME"]) / ".legion/temp"
+            locations = [str(path.parents[2]) for parent in (tool.parent, scratch) for path in parent.glob("legion-recovery-*/environment/installed")]
+            state_file.with_suffix(".recovery").write_text(json.dumps(locations), encoding="utf-8")
             shutil.rmtree(tool)
             bin_dir = Path(os.environ["UV_TOOL_BIN_DIR"])
             (bin_dir / ("legion.cmd" if sys.platform == "win32" else "legion")).unlink()

@@ -244,7 +244,7 @@ def _replace(
             return scheduled
         if progress is not None:
             progress(f"Installing legion {version} with uv...")
-        with _restore_failed_replacement(uv, source_file) if rollback else nullcontext():
+        with _restore_failed_replacement(uv, home, source_file) if rollback else nullcontext():
             source_file.unlink(missing_ok=True)
             exit_code = _run_install(uv, command[1:], progress)
             if exit_code:
@@ -260,7 +260,7 @@ def _replace(
 
 
 @contextmanager
-def _restore_failed_replacement(uv: str, receipt: Path) -> Iterator[None]:
+def _restore_failed_replacement(uv: str, home: Path, receipt: Path) -> Iterator[None]:
     # uv can remove the old tool and its entry point before an install fails.
     directory = run_command(uv, ["tool", "dir"])
     binaries = bin_directory(uv)
@@ -270,7 +270,11 @@ def _restore_failed_replacement(uv: str, receipt: Path) -> Iterator[None]:
     tool = Path(directory.output.strip()) / TOOL
     launcher = Path(entry)
     paths = (tool, launcher, receipt)
-    scratch = Path(tempfile.mkdtemp(prefix="legion-recovery-", dir=tool.parent))
+    temp = home / ".legion/temp"
+    if not owner_path_safe(temp, home):
+        raise UvToolError("The Legion recovery folder contains a link; resolve it before updating")
+    temp.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="legion-recovery-", dir=temp))
     restoring = False
     try:
         copies = [scratch / name for name in ("environment", "entry", "receipt")]

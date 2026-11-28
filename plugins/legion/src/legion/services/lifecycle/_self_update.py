@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 from contextlib import redirect_stderr, redirect_stdout, suppress
 from datetime import datetime
 from pathlib import Path
@@ -33,8 +34,13 @@ if sys.platform != "win32":
     import pty
 
 RESULT = Path(".legion/temp/self-update.log")
+WORKER_ERROR = Path(".legion/temp/self-update.err")
 HANDOFF = Path(".legion/state/handoff.md")
 ERRORS = (*_lifecycle.ERRORS, _channel.ChannelError, _overseer.OverseerError, _repository.RepositoryError, psutil.Error)
+
+
+class OtherSessionsError(ValueError):
+    pass
 
 
 def _source(source: str, ref: str) -> tuple[str, str]:
@@ -108,6 +114,31 @@ def _resume(repo: Path, home: Path, pid: int, session_id: str | None) -> tuple[_
     return saved.model_copy(update={"session": session}), launch
 
 
+def _check_other_sessions(home: Path, pid: int) -> None:
+    registered = _stop_event.running(home)
+    launcher = next((process.pid for process in _process.ancestors(pid) if process.pid in registered), None)
+    others = []
+    for process_id in registered:
+        if process_id == launcher:
+            continue
+        if pid in {process.pid for process in _process.ancestors(process_id)}:
+            # The plugin starts its MCP server with the single argument "mcp".
+            # A member launched from the overseer's tree still has its own launcher.
+            try:
+                command = psutil.Process(process_id).cmdline()
+            except psutil.NoSuchProcess:
+                continue
+            except psutil.AccessDenied:
+                command = []
+            if command[1:] == ["mcp"] or command[-3:] == ["-m", "legion.cli", "mcp"]:
+                continue
+            if len(command) == 3 and Path(command[1]).stem == "legion" and command[2] == "mcp":
+                continue
+        others.append(str(process_id))
+    if others:
+        raise OtherSessionsError(f"Cannot self-update while other Legion sessions are running (process {', '.join(others)}). Close them first.")
+
+
 def request(home: Path, source: str, ref: str, session_id: str | None, *, source_explicit: bool) -> int:
     repo = _repository._code_root(Path.cwd())
     current = _lease.state(repo).lease
@@ -121,7 +152,8 @@ def request(home: Path, source: str, ref: str, session_id: str | None, *, source
     if not _home.owner_path_safe(repo / HANDOFF, repo) or not (repo / HANDOFF).is_file():
         raise ValueError("Save the overseer handoff before self-update")
     lock = _home.run_folder(home) / "self-update.lock"
-    if not _home.owner_path_safe(repo / RESULT, repo) or not _home.owner_path_safe(lock, home):
+    error_log = home / WORKER_ERROR
+    if not (_home.owner_path_safe(repo / RESULT, repo) and _home.owner_path_safe(lock, home) and _home.owner_path_safe(error_log, home)):
         raise ValueError("The self-update log or lock path contains a link")
     try:
         with FileLock(lock, timeout=0):
@@ -141,13 +173,22 @@ def request(home: Path, source: str, ref: str, session_id: str | None, *, source
             arguments.extend(["--session-id", session_id])
         return _run.run_foreground(uv, ["tool", "run", "--isolated", "--refresh-package", "legion", "--from", candidate, "legion", *arguments])
 
+    with _lifecycle.saved_path():
+        preview = _lifecycle.plan(home, "update", source=source, source_explicit=source_explicit, ref=ref, dry_run=True, self_update=True)
+    if not preview.steps:
+        click.echo("skip: self-update (already current)")
+        return 0
+    _check_other_sessions(home, current.pid)
+
     command = [sys.executable, "-m", __name__, str(home), str(repo), source, str(int(source_explicit)), ref, str(current.pid), str(caller.pid), caller.started_at.isoformat(), session_id or ""]
     environment = _run.launch_environment() | {"LEGION_HOME": str(home)}
+    error_log.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform == "win32":
-        # A new console provides an interactive relaunch after the old Terminal tab goes away.
+        # Give the worker fresh console handles. It opens its log after startup.
         subprocess.Popen(command, cwd=repo, env=environment, creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_BREAKAWAY_FROM_JOB)
     else:
-        subprocess.Popen(command, cwd=repo, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        with error_log.open("ab") as errors:
+            subprocess.Popen(command, cwd=repo, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors, start_new_session=True)
     click.echo(f"Legion self-update queued. This session will stop and reopen. Result: {repo / RESULT}")
     return 0
 
@@ -168,13 +209,20 @@ def _report_failure(home: Path, channels: list[str], line: str) -> None:
                     _telegram.send(channel.id, channel.target, line, "plain", None, [], home=home)
 
 
+def _log_error(error: Exception) -> None:
+    # The traceback locates the failure without recording arbitrary exception details.
+    with suppress(OSError):
+        traceback.print_tb(error.__traceback__)
+        print(type(error).__name__, file=sys.stderr, flush=True)
+
+
 def _update(home: Path, repo: Path, owner: psutil.Process, source: str, ref: str, source_explicit: bool) -> str:
     # Preparation and plugin changes happen after the old launcher has released its files.
     try:
-        _uv_tool.stop_running(home)
-    except _uv_tool.UvToolError:
-        return "Legion self-update failed while waiting for registered sessions to exit."
-    try:
+        try:
+            _uv_tool.stop_running(home)
+        except _uv_tool.UvToolError:
+            return "Legion self-update failed while waiting for registered sessions to exit."
         if _stop_event._still_running(owner) or _lease.state(repo).state in ("held", "foreign"):
             return "Legion self-update failed because the repository still has a live overseer."
         with _lifecycle.saved_path():
@@ -192,13 +240,15 @@ def _relaunch(repo: Path, launch: _overseer.Launch, line: str) -> int:
     launch.arguments[-1] = f"{line} Continue as the overseer. Take the lease, read {HANDOFF.as_posix()} and {RESULT.as_posix()}, then report the result on every connected channel."
     if sys.platform == "win32":
         print(line, flush=True)
-        return _overseer.start_launch(repo, launch, in_place=True)
+        with redirect_stderr(sys.__stderr__):
+            return _overseer.start_launch(repo, launch, in_place=True)
 
     # An interactive CLI needs a controlling terminal even when the requesting command was piped.
     child, terminal = pty.fork()
     if not child:
         try:
-            code = _overseer.start_launch(repo, launch, in_place=True)
+            with redirect_stderr(sys.__stderr__):
+                code = _overseer.start_launch(repo, launch, in_place=True)
         except ERRORS:
             code = 1
         os._exit(code)
@@ -212,6 +262,14 @@ def _relaunch(repo: Path, launch: _overseer.Launch, line: str) -> int:
     return os.waitstatus_to_exitcode(os.waitpid(child, 0)[1])
 
 
+def _wait_for_request(requester: int, started: datetime) -> None:
+    deadline = time.monotonic() + _stop_event.WAIT_SECONDS
+    while (process := _process.process_info(requester)) is not None and _process.same_start_time(process.started_at, started):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("requester timeout")
+        time.sleep(0.1)
+
+
 def _worker(home: Path, repo: Path, source: str, ref: str, pid: int, requester: int, started: datetime, session_id: str | None, *, source_explicit: bool) -> int:
     lock = FileLock(_home.run_folder(home) / "self-update.lock", timeout=0)
     try:
@@ -219,53 +277,83 @@ def _worker(home: Path, repo: Path, source: str, ref: str, pid: int, requester: 
     except Timeout:
         return 0
     try:
-        _write_result(repo, "Legion self-update is waiting for the requesting command to exit.")
-        deadline = time.monotonic() + _stop_event.WAIT_SECONDS
-        while (process := _process.process_info(requester)) is not None and _process.same_start_time(process.started_at, started):
-            if time.monotonic() >= deadline:
-                raise TimeoutError("requester timeout")
-            time.sleep(0.1)
-        saved, launch = _resume(repo, home, pid, session_id)
-        owner = psutil.Process(pid)
-        _write_result(repo, "Legion self-update is stopping registered sessions.")
+        saved = None
+        try:
+            saved, launch = _resume(repo, home, pid, session_id)
+            owner = psutil.Process(pid)
+            _write_result(repo, "Legion self-update is waiting for the requesting command to exit.")
+            _wait_for_request(requester, started)
+            _check_other_sessions(home, pid)
+            _write_result(repo, "Legion self-update is stopping registered sessions.")
+        except Exception as error:
+            _log_error(error)
+            line = "Legion self-update failed before stopping the overseer. Read the saved handoff and check the update log."
+            if isinstance(error, OtherSessionsError):
+                line = str(error)
+            with suppress(OSError, ValueError):
+                _write_result(repo, line)
+            if saved is not None:
+                _report_failure(home, saved.channels, line)
+            return 1
+
         try:
             line = _update(home, repo, owner, source, ref, source_explicit)
-        except _lifecycle.ERRORS:
+        except Exception as error:
+            _log_error(error)
             line = "Legion self-update failed while preparing the update."
-        if _stop_event._still_running(owner) or _lease.state(repo).state in ("held", "foreign"):
+        try:
+            owner_running = _stop_event._still_running(owner)
+        except Exception as error:
+            _log_error(error)
+            owner_running = psutil.pid_exists(pid)
+        if owner_running:
             line = f"{line} The overseer is still running."
-            _write_result(repo, line)
+            with suppress(OSError, ValueError):
+                _write_result(repo, line)
             _report_failure(home, saved.channels, line)
             return 1
         # History supports manual recovery. The in-memory launch can still resume if saving fails.
-        with suppress(OSError, ValueError):
+        try:
             _overseer.save_last(repo, home, saved)
+        except Exception as error:
+            _log_error(error)
+        result_written = False
         try:
             _write_result(repo, line)
-        except (OSError, ValueError):
+            result_written = True
+        except Exception as error:
+            _log_error(error)
             line = f"{line} The result file could not be written."
-    except ERRORS:
-        _write_result(repo, "Legion self-update failed before relaunch. Open Legion in this repository and read the saved handoff.")
-        return 1
     finally:
         lock.release()
 
     try:
         code = _relaunch(repo, launch, line)
-    except ERRORS:
+    except Exception as error:
+        _log_error(error)
         code = 1
     # A later self-update intentionally stops this launcher.
-    lease = _lease.state(repo).lease
+    lease = None
+    try:
+        lease = _lease.state(repo).lease
+    except Exception as error:
+        _log_error(error)
     if code or (lease is not None and lease.pid == pid):
         with suppress(Timeout, OSError, ValueError), lock.acquire():
-            if not _stop_event.stop_raised(home) and (repo / RESULT).read_text(encoding="utf-8").strip() == line:
+            if not _stop_event.stop_raised(home) and (not result_written or (repo / RESULT).read_text(encoding="utf-8").strip() == line):
                 reason = f"exited with code {code}" if code else "exited before taking the lease"
                 line = f"{line} Overseer relaunch {reason}. Open Legion in this repository and read the saved handoff."
-                _write_result(repo, line)
                 _report_failure(home, saved.channels, line)
+                _write_result(repo, line)
     return code
 
 
 if __name__ == "__main__":
     home, repo, source, explicit, ref, pid, requester, started, session = sys.argv[1:]
-    raise SystemExit(_worker(Path(home), Path(repo), source, ref, int(pid), int(requester), datetime.fromisoformat(started), session or None, source_explicit=explicit == "1"))
+    with (Path(home) / WORKER_ERROR).open("a", encoding="utf-8") as errors, redirect_stderr(errors):
+        try:
+            code = _worker(Path(home), Path(repo), source, ref, int(pid), int(requester), datetime.fromisoformat(started), session or None, source_explicit=explicit == "1")
+        except Exception as error:
+            _log_error(error)
+            code = 1
+    raise SystemExit(code)

@@ -6,10 +6,12 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import psutil
 import pytest
 from click.testing import CliRunner, Result
 
@@ -852,6 +854,13 @@ def test_playground_intents_use_checkout_and_current_update_command() -> None:
     assert "install.sh --source /work/legion" in (intents / "bootstrap-one-liner.md").read_text(encoding="utf-8")
 
 
+def test_self_update_operator_instructions() -> None:
+    skill = (REPO / "plugins/legion/skills/legion-update/SKILL.md").read_text(encoding="utf-8")
+    ordered(skill.split("\n3. ", 1)[1].split("\n4. ", 1)[0], "running members", "handoff", "ask whether")
+    reference = (REPO / "docs/reference.md").read_text(encoding="utf-8")
+    assert "The original shell stays available on macOS and Linux." in reference
+
+
 @pytest.fixture
 def self_update_repo(lifecycle: Lifecycle, monkeypatch: pytest.MonkeyPatch) -> Path:
     git = TEST_GIT
@@ -876,7 +885,7 @@ def test_self_update_requires_an_overseer_lease(lifecycle: Lifecycle, self_updat
     assert not (lifecycle.home / ".legion/run/stop").exists()
 
 
-@pytest.mark.parametrize(("tool_id", "failure"), [("claude", None), ("claude", "uv"), ("claude", "target"), ("codex", None), ("copilot", None)])
+@pytest.mark.parametrize(("tool_id", "failure"), [("claude", None), ("claude", "uv"), ("claude", "target"), ("claude", "unexpected"), ("codex", None), ("copilot", None)])
 def test_self_update_stops_and_resumes_the_saved_launch(lifecycle: Lifecycle, self_update_repo: Path, monkeypatch: pytest.MonkeyPatch, tool_id: str, failure: str | None) -> None:
     lifecycle.enable(tool_id)
     lifecycle.install()
@@ -897,6 +906,27 @@ def test_self_update_stops_and_resumes_the_saved_launch(lifecycle: Lifecycle, se
         monkeypatch.setenv("FAKE_UV_FAIL", "install")
     if failure == "target":
         monkeypatch.setenv("FAKE_CLI_FAIL", "plugin uninstall")
+    if failure == "unexpected":
+        # Inject a process-start failure after the stop event through Python's public audit boundary.
+        injection = repo / "injection"
+        injection.mkdir()
+        socket_fence = (REPO / "tests/python/socket_fence/sitecustomize.py").read_text(encoding="utf-8")
+        (injection / "sitecustomize.py").write_text(
+            socket_fence
+            + """
+
+import sys
+
+def fail_after_stop(event, args):
+    if event == "subprocess.Popen" and Path(os.environ["LEGION_HOME"], ".legion/run/stop").is_file():
+        raise KeyError("injected process-start failure")
+
+if "LEGION_HOME" in os.environ:
+    sys.addaudithook(fail_after_stop)
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, (str(injection), os.environ.get("PYTHONPATH")))))
     lifecycle.publish_update()
     output = repo / "launcher.log"
     with output.open("wb") as stream:
@@ -949,15 +979,62 @@ def test_self_update_stops_and_resumes_the_saved_launch(lifecycle: Lifecycle, se
         assert "handoff" in resumed[-1]
         assert json.loads(resumed_config.read_text(encoding="utf-8")) == [str(lifecycle.account(tool_id)), channel]
         assert result.read_text(encoding="utf-8").startswith("Legion self-update failed" if failure else "Legion self-update completed")
+        if failure == "unexpected":
+            assert "KeyError" in (lifecycle.home / ".legion/temp/self-update.err").read_text(encoding="utf-8")
         assert read_json(lifecycle.uv)["version"] == (lifecycle.version if failure else UPDATED)
         if failure:
             assert entry.read_bytes() == old_entry
             assert original.read_text(encoding="utf-8") == "old installed environment"
         if failure == "target":
             assert sum(line[:2] == ["tool", "install"] for line in calls(lifecycle.uv.with_suffix(".log"))) == 1
+        if failure == "uv":
+            assert json.loads(lifecycle.uv.with_suffix(".recovery").read_text(encoding="utf-8")) == [str(lifecycle.home / ".legion/temp")]
+            assert not list((lifecycle.home / ".legion/temp").glob("legion-recovery-*"))
         assert (repo / ".legion/state/handoff.md").read_text(encoding="utf-8") == "Continue the fake task.\n"
         assert not (lifecycle.home / ".legion/run/stop").exists()
     finally:
         if launcher.poll() is None:
             launcher.kill()
             launcher.wait()
+
+
+@pytest.mark.parametrize("other_session", [False, True])
+def test_self_update_keeps_live_sessions_when_no_restart_is_safe(lifecycle: Lifecycle, self_update_repo: Path, monkeypatch: pytest.MonkeyPatch, other_session: bool) -> None:
+    lifecycle.enable("claude")
+    lifecycle.install()
+    lifecycle.add("claude")
+    monkeypatch.setenv("FAKE_OVERSEER_REQUEST", str(lifecycle.source))
+    run = lifecycle.home / ".legion/run"
+    run.mkdir(exist_ok=True)
+    if other_session:
+        lifecycle.publish_update()
+    child_code = "import time; time.sleep(60)"
+    with subprocess.Popen([sys.executable, "-c", child_code]) as member:
+        registration = run / f"{member.pid}.pid"
+        if other_session:
+            registration.write_text(str(member.pid), encoding="ascii")
+        with subprocess.Popen([sys.executable, "-m", "legion.cli", "--home", str(lifecycle.home)], cwd=self_update_repo, stdin=subprocess.DEVNULL) as launcher:
+            try:
+                status = self_update_repo / "self-update-request.txt"
+                deadline = time.monotonic() + 15
+                while not status.exists() and launcher.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                expected = f"other Legion sessions are running (process {member.pid})" if other_session else "skip: self-update (already current)"
+                assert expected in status.read_text(encoding="utf-8")
+                assert member.poll() is None
+                if not other_session:
+                    assert launcher.poll() is None
+                assert not (self_update_repo / ".legion/temp/self-update.log").exists()
+                assert not (run / "stop").exists()
+                assert len(calls(self_update_repo / "overseer.jsonl")) == 1
+            finally:
+                registration.unlink(missing_ok=True)
+                member.kill()
+                # Let Legion and the fake session leave normally in the no-op case.
+                if launcher.poll() is None:
+                    children = psutil.Process(launcher.pid).children(recursive=True)
+                    for child in reversed(children):
+                        with suppress(psutil.NoSuchProcess):
+                            child.kill()
+                    psutil.wait_procs(children, timeout=5)
+                    launcher.kill()

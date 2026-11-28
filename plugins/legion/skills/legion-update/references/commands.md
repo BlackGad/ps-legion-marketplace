@@ -26,7 +26,7 @@ When the installed command is still 0.23.1, use the new release's copy of the sa
 uvx --isolated --refresh-package legion --from "legion[mcp] @ git+https://github.com/BlackGad/ps-legion-marketplace.git@stable#subdirectory=plugins/legion" legion update --self --yes
 ```
 
-Read `.legion/temp/self-update.log` on return. Take the lease and report the result on every connected channel. An update failure still leads to a relaunch when the old session has stopped. If the request is refused, report the reason in the current session. If a stop times out and the overseer remains up, read the result there. When you recover from a relaunch failure, open Legion in the same repository and read the handoff and result.
+Read `.legion/temp/self-update.log` on return. Take the lease and report the result on every connected channel. An update failure still leads to a relaunch when the old session has stopped. Worker diagnostics are in `<home>/.legion/temp/self-update.err`. If the command prints `skip: self-update (already current)`, report it and continue in the current session. If the request is refused, report the reason and any listed process IDs in the current session. If a stop times out and the overseer remains up, read the result there. When you recover from a relaunch failure, open Legion in the same repository and read the handoff and result.
 
 ## Plain owner update
 
