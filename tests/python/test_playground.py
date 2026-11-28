@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -55,3 +56,18 @@ def test_shipped_intents_parse_and_cover_something() -> None:
     intents = play.load_intents(PLAY.parent / "intents")
     assert len(intents) >= 3
     assert all(intent.covers and intent.budget > 0 for intent in intents)
+
+
+@pytest.mark.parametrize(("os_name", "count", "message"), [("windows", 1, "one Windows playground container"), ("linux", 3, "three Linux playground containers")])
+def test_start_refuses_when_the_container_limit_is_reached(os_name: str, count: int, message: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    def docker(*args: str, **_options: bool) -> str:
+        if args[0] == "version":
+            return os_name
+        if args[0] == "ps":
+            return "\n".join(f"legion-play-{os_name}-{index}" for index in range(1, count + 1))
+        pytest.fail(f"start tried to {args[0]} a container at the limit")
+
+    monkeypatch.setattr(play, "docker", docker)
+    monkeypatch.setattr(sys, "argv", [str(PLAY), "start", os_name])
+    with pytest.raises(SystemExit, match=message):
+        play.main()

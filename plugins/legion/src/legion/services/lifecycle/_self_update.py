@@ -1,10 +1,12 @@
-# The worker runs from an independent uv environment through shutdown, update and resume.
+# The worker keeps the requesting Legion runtime available through shutdown, update and resume.
 
 import io
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from contextlib import redirect_stderr, redirect_stdout, suppress
@@ -36,6 +38,7 @@ if sys.platform != "win32":
 RESULT = Path(".legion/temp/self-update.log")
 WORKER_ERROR = Path(".legion/temp/self-update.err")
 HANDOFF = Path(".legion/state/handoff.md")
+START_FAILURE = "Legion self-update failed before stopping the overseer. Read the saved handoff and check the update log."
 ERRORS = (*_lifecycle.ERRORS, _channel.ChannelError, _overseer.OverseerError, _repository.RepositoryError, psutil.Error)
 
 
@@ -43,14 +46,12 @@ class OtherSessionsError(ValueError):
     pass
 
 
-def _source(source: str, ref: str) -> tuple[str, str]:
+def _source(source: str) -> str:
     if Path(source).is_dir():
-        source = str(_home.resolve_directory(Path(source)))
-        return source, f"{Path(source) / 'plugins/legion'}[mcp]"
+        return str(_home.resolve_directory(Path(source)))
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source):
         raise ValueError("Choose a local checkout or a GitHub owner/repository for self-update")
-    branch = "main" if ref == "main" else "stable"
-    return source, f"legion[mcp] @ git+https://github.com/{source}.git@{branch}#subdirectory=plugins/legion"
+    return source
 
 
 def _check_live_launch(pid: int, repo: Path, launch: _overseer.Launch, tool: str, session: str, config: tuple[str, Path]) -> None:
@@ -161,18 +162,10 @@ def request(home: Path, source: str, ref: str, session_id: str | None, *, source
     except Timeout:
         raise ValueError("A Legion self-update is already running in this home") from None
     _resume(repo, home, current.pid, session_id)
-    source, candidate = _source(source, ref)
+    source = _source(source)
     uv = _uv_tool.find_uv()
     if uv is None:
         raise ValueError(_uv_tool.UV_MISSING)
-    if _uv_tool.running_from_tool(uv):
-        arguments = ["--home", str(home), "update", "--self", "--yes", "--ref", ref]
-        if source_explicit:
-            arguments.extend(["--source", source])
-        if session_id:
-            arguments.extend(["--session-id", session_id])
-        return _run.run_foreground(uv, ["tool", "run", "--isolated", "--refresh-package", "legion", "--from", candidate, "legion", *arguments])
-
     with _lifecycle.saved_path():
         preview = _lifecycle.plan(home, "update", source=source, source_explicit=source_explicit, ref=ref, dry_run=True, self_update=True)
     if not preview.steps:
@@ -180,17 +173,54 @@ def request(home: Path, source: str, ref: str, session_id: str | None, *, source
         return 0
     _check_other_sessions(home, current.pid)
 
-    command = [sys.executable, "-m", __name__, str(home), str(repo), source, str(int(source_explicit)), ref, str(current.pid), str(caller.pid), caller.started_at.isoformat(), session_id or ""]
-    environment = _run.launch_environment() | {"LEGION_HOME": str(home)}
-    error_log.parent.mkdir(parents=True, exist_ok=True)
-    if sys.platform == "win32":
-        # Give the worker fresh console handles. It opens its log after startup.
-        subprocess.Popen(command, cwd=repo, env=environment, creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_BREAKAWAY_FROM_JOB)
-    else:
-        with error_log.open("ab") as errors:
-            subprocess.Popen(command, cwd=repo, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors, start_new_session=True)
+    arguments = [str(home), str(repo), source, str(int(source_explicit)), ref, str(current.pid), str(caller.pid), caller.started_at.isoformat(), session_id or ""]
+    try:
+        _start_worker(home, repo, error_log, arguments, installed=_uv_tool.running_from_tool(uv))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        _write_result(repo, START_FAILURE)
+        raise ValueError(f"{START_FAILURE} Result: {repo / RESULT}") from None
     click.echo(f"Legion self-update queued. This session will stop and reopen. Result: {repo / RESULT}")
     return 0
+
+
+def _start_worker(home: Path, repo: Path, error_log: Path, arguments: list[str], *, installed: bool) -> None:
+    # A base-Python supervisor removes the temporary runtime after the worker unloads its files.
+    supervisor = """
+import shutil, subprocess, sys
+try:
+    raise SystemExit(subprocess.call(sys.argv[2:]))
+finally:
+    shutil.rmtree(sys.argv[1], ignore_errors=True)
+"""
+    environment = _run.launch_environment() | {"LEGION_HOME": str(home)}
+    error_log.parent.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="legion-worker-", dir=error_log.parent))
+    ready = scratch / "ready"
+    python = Path(sys.executable)
+    try:
+        if installed:
+            runtime = scratch / "environment"
+            shutil.copytree(sys.prefix, runtime, symlinks=sys.platform != "win32")
+            python = runtime / python.relative_to(sys.prefix)
+        base_python = getattr(sys, "_base_executable", sys.executable)
+        command = [base_python, "-I", "-c", supervisor, str(scratch), str(python), "-m", __name__, str(ready), *arguments]
+        if sys.platform == "win32":
+            # Inherit fresh console handles so the resumed overseer can interact with the owner.
+            process = subprocess.Popen(command, cwd=repo, env=environment, creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_BREAKAWAY_FROM_JOB)
+        else:
+            with error_log.open("ab") as errors:
+                process = subprocess.Popen(command, cwd=repo, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors, start_new_session=True)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
+
+    deadline = time.monotonic() + _stop_event.WAIT_SECONDS
+    while not ready.exists():
+        if process.poll() is not None or time.monotonic() >= deadline:
+            raise TimeoutError("The self-update worker did not start")
+        time.sleep(0.05)
+    # Only an acknowledged worker may stop the overseer, even if it starts after the timeout.
+    ready.unlink()
 
 
 def _write_result(repo: Path, line: str) -> None:
@@ -270,7 +300,7 @@ def _wait_for_request(requester: int, started: datetime) -> None:
         time.sleep(0.1)
 
 
-def _worker(home: Path, repo: Path, source: str, ref: str, pid: int, requester: int, started: datetime, session_id: str | None, *, source_explicit: bool) -> int:
+def _worker(home: Path, repo: Path, source: str, ref: str, pid: int, requester: int, started: datetime, session_id: str | None, ready: Path, *, source_explicit: bool) -> int:
     lock = FileLock(_home.run_folder(home) / "self-update.lock", timeout=0)
     try:
         lock.acquire()
@@ -283,11 +313,13 @@ def _worker(home: Path, repo: Path, source: str, ref: str, pid: int, requester: 
             owner = psutil.Process(pid)
             _write_result(repo, "Legion self-update is waiting for the requesting command to exit.")
             _wait_for_request(requester, started)
+            if ready.exists():
+                raise TimeoutError("The requesting command did not acknowledge the worker")
             _check_other_sessions(home, pid)
             _write_result(repo, "Legion self-update is stopping registered sessions.")
         except Exception as error:
             _log_error(error)
-            line = "Legion self-update failed before stopping the overseer. Read the saved handoff and check the update log."
+            line = START_FAILURE
             if isinstance(error, OtherSessionsError):
                 line = str(error)
             with suppress(OSError, ValueError):
@@ -349,11 +381,14 @@ def _worker(home: Path, repo: Path, source: str, ref: str, pid: int, requester: 
 
 
 if __name__ == "__main__":
-    home, repo, source, explicit, ref, pid, requester, started, session = sys.argv[1:]
+    ready, home, repo, source, explicit, ref, pid, requester, started, session = sys.argv[1:]
     with (Path(home) / WORKER_ERROR).open("a", encoding="utf-8") as errors, redirect_stderr(errors):
         try:
-            code = _worker(Path(home), Path(repo), source, ref, int(pid), int(requester), datetime.fromisoformat(started), session or None, source_explicit=explicit == "1")
+            Path(ready).touch()
+            code = _worker(Path(home), Path(repo), source, ref, int(pid), int(requester), datetime.fromisoformat(started), session or None, Path(ready), source_explicit=explicit == "1")
         except Exception as error:
             _log_error(error)
+            with suppress(OSError, ValueError):
+                _write_result(Path(repo), START_FAILURE)
             code = 1
     raise SystemExit(code)

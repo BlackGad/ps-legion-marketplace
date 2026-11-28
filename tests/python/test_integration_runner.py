@@ -283,7 +283,7 @@ def test_update_first_reinstalls_a_tool_then_repeat_is_stable(tmp_path: Path) ->
         owner_calls.append(args)
         if len(owner_calls) == 1:
             return f"Update legion for codex\nResults:\ncodex  {instance.folder('codex')}  installed legion {expected}"
-        return "Nothing to do. Legion is already installed for the available targets."
+        return "Nothing to do. Legion is already up to date."
 
     instance.legion = legion
     instance.version = lambda _tool, _folder: expected

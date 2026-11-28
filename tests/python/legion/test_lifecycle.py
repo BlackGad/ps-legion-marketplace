@@ -213,6 +213,13 @@ def test_repeat_install_skips_existing_plugins_and_uv(lifecycle: Lifecycle) -> N
     assert not lifecycle.settings.exists()
 
 
+def test_unchanged_checkout_update_reports_it_is_current(lifecycle: Lifecycle) -> None:
+    lifecycle.enable("codex")
+    lifecycle.install()
+    result = lifecycle.invoke("update", "--source", str(lifecycle.source))
+    assert result.output.splitlines() == ["Nothing to do. Legion is already up to date."]
+
+
 def test_status_and_install_use_stock_default_folders(lifecycle: Lifecycle, monkeypatch: pytest.MonkeyPatch) -> None:
     lifecycle.enable("claude", "codex")
     overrides = {tool: lifecycle.home / f"override-{tool}" for tool in CONFIG}
@@ -800,8 +807,7 @@ def test_playground_path_result(lifecycle: Lifecycle, monkeypatch: pytest.Monkey
     if reachable:
         assert last.endswith("installed")
     else:
-        assert "not on PATH" in last
-        assert f"Add {lifecycle.home / 'tool bin'} to your PATH." in last
+        ordered(last, "not on PATH in this terminal.", "Open a new terminal.", f"If legion is still unavailable, add {lifecycle.home / 'tool bin'} to your PATH.")
 
 
 def test_playground_purge_result(lifecycle: Lifecycle) -> None:
@@ -954,8 +960,10 @@ if "LEGION_HOME" in os.environ:
                 check=False,
             )
             assert request.returncode == 0, request.stderr
-        launcher.wait(timeout=40)
-        assert "stopped for an update" in output.read_text(encoding="utf-8")
+        assert launcher.wait(timeout=40) == 0, output.read_text(encoding="utf-8")
+        launched_output = output.read_text(encoding="utf-8")
+        assert "stopped for an update" in launched_output
+        assert "the launch failed" not in launched_output
         starts = repo / "overseer.jsonl"
         result = repo / ".legion/temp/self-update.log"
         deadline = time.monotonic() + 40
@@ -994,6 +1002,77 @@ if "LEGION_HOME" in os.environ:
         assert not (lifecycle.home / ".legion/run/stop").exists()
     finally:
         if launcher.poll() is None:
+            launcher.kill()
+            launcher.wait()
+
+
+@pytest.mark.parametrize("worker_import_fails", [False, True])
+def test_bare_installed_self_update_uses_its_own_runtime(lifecycle: Lifecycle, self_update_repo: Path, monkeypatch: pytest.MonkeyPatch, worker_import_fails: bool) -> None:
+    lifecycle.enable("claude")
+    lifecycle.install()
+    lifecycle.add("claude")
+    lifecycle.publish_update()
+    tool = Path(os.environ["UV_TOOL_DIR"]) / "legion"
+    shutil.copytree(sys.prefix, tool, symlinks=sys.platform != "win32")
+    python = tool / Path(sys.executable).relative_to(sys.prefix)
+    monkeypatch.setenv("FAKE_OVERSEER_REQUEST", str(lifecycle.source))
+    monkeypatch.setenv("FAKE_OVERSEER_BARE_PYTHON", str(python))
+    if worker_import_fails:
+        injection = self_update_repo / "injection"
+        injection.mkdir()
+        (injection / "sitecustomize.py").write_text(
+            (REPO / "tests/python/socket_fence/sitecustomize.py").read_text(encoding="utf-8")
+            + "\nimport sys\n"
+            + "if sys.argv[0] == '-m' and any('legion-worker-' in part for part in Path(sys.prefix).parts):\n"
+            + "    sys.modules['legion.services.lifecycle._self_update'] = None\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, (str(injection), os.environ.get("PYTHONPATH")))))
+    repo = self_update_repo
+    output = repo / "launcher.log"
+    with output.open("wb") as stream:
+        launcher = subprocess.Popen(
+            [sys.executable, "-m", "legion.cli", "--home", str(lifecycle.home)],
+            cwd=repo,
+            stdin=subprocess.DEVNULL,
+            stdout=stream,
+            stderr=stream,
+        )
+    try:
+        result = repo / ".legion/temp/self-update.log"
+        last_line = "Legion self-update failed before stopping the overseer." if worker_import_fails else "Legion self-update completed."
+        deadline = time.monotonic() + 45
+        request = repo / "self-update-request.txt"
+        while not (result.exists() and result.read_text(encoding="utf-8").startswith(last_line)):
+            if request.exists():
+                request_output = request.read_text(encoding="utf-8")
+                assert result.exists() or "self-update queued" in request_output, request_output
+            assert launcher.poll() in (None, 0), output.read_text(encoding="utf-8")
+            assert time.monotonic() < deadline, output.read_text(encoding="utf-8")
+            time.sleep(0.05)
+        assert not any(args[:2] == ["tool", "run"] for args in calls(lifecycle.uv.with_suffix(".log")))
+        if worker_import_fails:
+            assert launcher.poll() is None
+            assert len(calls(repo / "overseer.jsonl")) == 1
+            assert not (lifecycle.home / ".legion/run/stop").exists()
+            assert read_json(lifecycle.uv)["version"] == lifecycle.version
+        else:
+            assert launcher.wait(timeout=10) == 0
+            resumed = repo / "resumed-config.json"
+            while not resumed.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert resumed.exists()
+            assert read_json(lifecycle.uv)["version"] == UPDATED
+            assert not tool.exists()
+            first, second = calls(repo / "overseer.jsonl")
+            assert second[:2] == ["--resume", first[1]]
+    finally:
+        if launcher.poll() is None:
+            children = psutil.Process(launcher.pid).children(recursive=True)
+            for child in reversed(children):
+                with suppress(psutil.NoSuchProcess):
+                    child.kill()
+            psutil.wait_procs(children, timeout=5)
             launcher.kill()
             launcher.wait()
 

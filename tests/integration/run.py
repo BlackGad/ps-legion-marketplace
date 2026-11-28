@@ -40,6 +40,7 @@ ENDPOINT = "https://example-resource.cognitiveservices.azure.com"
 WINDOWS = sys.platform == "win32"
 CODEX_PROBE_SECONDS = 120
 INSTALLATION_NO_CHANGES = "Nothing to do. Legion is already installed for the available targets."
+UPDATE_NO_CHANGES = "Nothing to do. Legion is already up to date."
 
 
 @dataclass
@@ -702,7 +703,7 @@ class Runner:
             restored = rf"^{re.escape(target)}\s+{re.escape(str(self.folder(target)))}\s+installed legion {re.escape(expected)}$"
             require(re.search(restored, output, re.MULTILINE) is not None, output)
         elif all(self.targets[tool][1] != "main" for tool in active):
-            require(output == INSTALLATION_NO_CHANGES, output)
+            require(output == UPDATE_NO_CHANGES, output)
         else:
             contains(output, "already done")
         for tool in active:

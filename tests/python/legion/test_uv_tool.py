@@ -192,7 +192,7 @@ def test_a_failed_update_shell_reports_the_path_action(tmp_path: Path, home: Pat
     monkeypatch.setattr(_user_path, "persistent_folders", list)
     uv.fail["tool update-shell"] = 1
     lines = _uv_tool.install(make_source(tmp_path), home, update_shell=True)
-    assert lines == [f"legion command 1.0.0 is installed but not on PATH. Add {uv.bin} to your PATH."]
+    assert lines == [f"legion command 1.0.0 is installed but not on PATH in this terminal. Open a new terminal. If legion is still unavailable, add {uv.bin} to your PATH."]
     assert uv.installed == "1.0.0"
 
 

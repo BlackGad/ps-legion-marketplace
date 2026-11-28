@@ -6,7 +6,6 @@ import os
 import shutil
 import subprocess
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +17,7 @@ IMAGES = {name: f"legion-playground:{name}" for name in OS_NAMES}
 WORK = {"linux": "/work", "windows": "C:\\work"}
 KEEP_ALIVE = {"linux": ["sleep", "infinity"], "windows": ["ping", "-t", "localhost"]}
 SWITCH_FLAG = {"linux": "-SwitchLinuxEngine", "windows": "-SwitchWindowsEngine"}
+CONTAINER_LIMIT = {"linux": 3, "windows": 1}
 
 
 @dataclass
@@ -108,11 +108,18 @@ def copy_branch(name: str, os_name: str) -> None:
 
 def start(os_name: str, switch: bool) -> None:
     ensure_mode(os_name, switch)
+    prefix = f"legion-play-{os_name}-"
+    containers = set(docker("ps", "--all", "--filter", f"name=^/{prefix}", "--format", "{{.Names}}").splitlines())
+    limit = CONTAINER_LIMIT[os_name]
+    if len(containers) >= limit:
+        maximum = "one Windows playground container" if os_name == "windows" else "three Linux playground containers"
+        raise SystemExit(f"Run at most {maximum} at a time. Stop a playground container before starting another.")
     build_image(os_name)
-    name = f"legion-play-{os_name}-{uuid.uuid4().hex[:6]}"
+    # Docker reserves each slot name so concurrent starts cannot exceed the limit.
+    name = next(f"{prefix}{slot}" for slot in range(1, limit + 1) if f"{prefix}{slot}" not in containers)
+    # Hyper-V containers cannot be copied into while running.
+    docker("create", "--name", name, IMAGES[os_name], *KEEP_ALIVE[os_name])
     try:
-        # Created first and started after the copy: Hyper-V containers cannot be copied into while running.
-        docker("create", "--name", name, IMAGES[os_name], *KEEP_ALIVE[os_name])
         copy_branch(name, os_name)
         docker("start", name)
     except BaseException:

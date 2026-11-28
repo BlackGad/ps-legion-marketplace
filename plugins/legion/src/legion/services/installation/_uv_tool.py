@@ -147,7 +147,7 @@ def _path_result(uv: str, *, update_shell: bool) -> str | None:
     if _reachable():
         return None
     folder = bin_directory(uv)
-    return f"Add {folder or "uv's tool folder"} to your PATH."
+    return f"Open a new terminal. If legion is still unavailable, add {folder or "uv's tool folder"} to your PATH."
 
 
 def replacement_needed(uv: str, root: Path, home: Path, receipt: str | None) -> bool:
@@ -195,7 +195,7 @@ def install(
             if dry_run:
                 return [display_command([uv, "tool", "update-shell"])]
             instruction = _path_result(uv, update_shell=True)
-            return [f"legion command {version} is installed but not on PATH. {instruction}" if instruction else f"legion command {version} is on PATH."]
+            return [f"legion command {version} is installed but not on PATH in this terminal. {instruction}" if instruction else f"legion command {version} is on PATH."]
         return [f"skip: legion command {version} (already done)"]
     spec = f"{plugin_root}[mcp]"
     if dry_run:
@@ -206,7 +206,7 @@ def install(
         return [scheduled]
     outcome = f"legion {version} is installed; restart your sessions." if updating else f"legion command {version} installed"
     instruction = _path_result(uv, update_shell=update_shell)
-    return [f"legion command {version} is installed but not on PATH. {instruction}" if instruction else outcome]
+    return [f"legion command {version} is installed but not on PATH in this terminal. {instruction}" if instruction else outcome]
 
 
 def _replace(

@@ -280,7 +280,10 @@ def _installation_steps(
     if not any(step.needs_yes for step in changes.steps):
         changes.steps.clear()
         changes.notices.clear()
-        changes.summary = "Nothing to do. Legion is already installed for the available targets."
+        if intent == "update":
+            changes.summary = "Nothing to do. Legion is already up to date."
+        else:
+            changes.summary = "Nothing to do. Legion is already installed for the available targets."
 
 
 def _removal_targets(home: Path, catalog: ToolsCatalog, settings: PersonalisationSettings) -> Iterator[tuple[CatalogTool, Path, str | None, PluginPin | None]]:

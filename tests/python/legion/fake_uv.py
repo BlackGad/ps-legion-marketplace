@@ -49,6 +49,8 @@ def main(args: list[str]) -> int:
         assert "fake-dependency==1.0.0" in Path(constraints).read_text(encoding="utf-8")
         root = Path(spec.removesuffix("[mcp]"))
         version = json.loads((root / "plugin.json").read_text(encoding="utf-8"))["version"]
+        if os.environ.get("FAKE_OVERSEER_BARE_PYTHON"):
+            shutil.rmtree(Path(os.environ["UV_TOOL_DIR"]) / "legion")
         state_file.write_text(json.dumps({"version": version, "source": str(root)}), encoding="utf-8")
         write_shim(Path(os.environ["UV_TOOL_BIN_DIR"]), "legion", Path(__file__))
     elif verb == "uninstall":
