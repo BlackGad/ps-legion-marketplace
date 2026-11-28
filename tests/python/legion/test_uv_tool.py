@@ -1,5 +1,4 @@
 # Install, update and uninstall of the legion command through a recording fake uv. No test starts the real uv.
-import os
 import shutil
 import sys
 import tempfile
@@ -26,7 +25,7 @@ def home(tmp_path: Path) -> Path:
 
 def test_install_exports_the_lock_then_installs_non_editable_with_the_extra(tmp_path: Path, home: Path, uv: FakeUv) -> None:
     source = make_source(tmp_path)
-    assert _uv_tool.install(source, home) == ["legion command 1.0.0 installed"]
+    assert _uv_tool.install(source, home)[0].startswith("legion command 1.0.0")
     export = next(call for call in uv.calls if call[0] == "export")
     assert export == ["export", "--frozen", "--no-default-groups", "--extra", "mcp", "--no-emit-project", "--no-hashes"]
     (install,) = uv.installs()
@@ -34,7 +33,6 @@ def test_install_exports_the_lock_then_installs_non_editable_with_the_extra(tmp_
     assert install[3] == "--constraints"
     assert install[5] == "--reinstall"
     assert not Path(install[4]).parent.exists()
-    assert os.environ["PATH"].split(os.pathsep)[0] == str(uv.bin)
 
 
 def test_the_constraints_file_holds_the_exported_lock(tmp_path: Path, home: Path, uv: FakeUv, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,7 +107,7 @@ def test_a_repeat_of_the_installed_version_prints_skip_and_changes_nothing(tmp_p
 
 def test_a_new_plugin_version_replaces_the_installed_one(tmp_path: Path, home: Path, uv: FakeUv) -> None:
     uv.installed = "0.9.0"
-    assert _uv_tool.install(make_source(tmp_path), home)[0] == "legion command 1.0.0 installed"
+    assert _uv_tool.install(make_source(tmp_path), home)[0].startswith("legion command 1.0.0")
     assert uv.installed == "1.0.0"
 
 
@@ -150,6 +148,8 @@ def test_only_windows_self_replacement_needs_a_handover(tmp_path: Path, home: Pa
     uv.installed = "0.9.0"
     prefix = str(uv.tools / "legion" if inside else tmp_path / "elsewhere")
     monkeypatch.setattr(_uv_tool, "sys", SimpleNamespace(platform=platform, prefix=prefix))
+    monkeypatch.setenv("PATH", str(uv.bin))
+    monkeypatch.setattr(_user_path, "persistent_folders", list)
     lines = _uv_tool.install(make_source(tmp_path), home, updating=True)
     assert bool(uv.detached) is expected
     if expected:
@@ -187,10 +187,12 @@ def test_a_failed_export_stops_before_installing(tmp_path: Path, home: Path, uv:
     assert not _stop_event.stop_path(home).exists()
 
 
-def test_a_failed_update_shell_is_a_warning_not_an_error(tmp_path: Path, home: Path, uv: FakeUv) -> None:
+def test_a_failed_update_shell_reports_the_path_action(tmp_path: Path, home: Path, uv: FakeUv, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setattr(_user_path, "persistent_folders", list)
     uv.fail["tool update-shell"] = 1
     lines = _uv_tool.install(make_source(tmp_path), home, update_shell=True)
-    assert any("update-shell exited 1" in line for line in lines)
+    assert lines == [f"legion command 1.0.0 is installed but not on PATH in this terminal. Open a new terminal. If legion is still unavailable, add {uv.bin} to your PATH."]
     assert uv.installed == "1.0.0"
 
 
@@ -203,6 +205,7 @@ def test_without_uv_install_says_so_and_runs_nothing(tmp_path: Path, home: Path,
     assert uv.calls == []
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows schedules tool removal")
 def test_uninstall_hands_only_the_tool_removal_to_the_helper_with_the_stop_file(home: Path, uv: FakeUv) -> None:
     uv.installed = "1.0.0"
     assert _uv_tool.uninstall(home) == [f"legion command removal scheduled. Check the result in {home / _uv_tool.HANDOVER_LOG}."]

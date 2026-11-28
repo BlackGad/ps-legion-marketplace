@@ -5,9 +5,9 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from collections.abc import Callable
 from typing import Optional
 
-from legion.services.repository import _footprints
 from legion.core import _settings_io
 from legion.services.accounts import _launchers
 from legion.core._generated import shell_literal
@@ -21,6 +21,7 @@ from legion.core._settings_models import (
 )
 from legion.core._validate import load_descriptors, settings_issues
 from legion.services.foundry import RECIPES, _discovery, recipe
+from legion.services.lifecycle import _adopt
 
 POSIX = os.name != "nt"
 
@@ -71,9 +72,7 @@ def _resolve_command(text: str, account: str, home: Path) -> Path:
     return command
 
 
-def _config_folder(account: str, config_dir: Optional[str], home: Path) -> Path:
-    if config_dir is None:
-        return full_path(home / ".legion" / "agents" / account)
+def _source_folder(config_dir: str, home: Path) -> Path:
     folder = full_path(home_path(config_dir, home))
     if not folder.is_dir():
         raise AccountError("Existing account config folder does not exist.")
@@ -120,24 +119,36 @@ def _repair(settings: PersonalisationSettings, existing: Agent, tool: ToolDescri
     return lines or [f"skip: account {existing.id} (already done)"]
 
 
-def add_subscription(home: Path, account: str, tool_id: str, command: Optional[str], config_dir: Optional[str]) -> list[str]:
+# A folder given by the owner is copied into the new account's own folder; the original stays as it is.
+def add_subscription(home: Path, account: str, tool_id: str, command: Optional[str], config_dir: Optional[str], say: Callable[[str], None] = lambda _line: None) -> list[str]:
     _check_id(account)
     tool = get_tool(tool_id)
     real = _resolve_command(command, account, home) if command is not None else None
-    folder = _config_folder(account, config_dir, home)
+    source = _source_folder(config_dir, home) if config_dir is not None else None
+    folder = full_path(home / ".legion" / "agents" / account)
     with _settings_io.writer(home, require_existing=False):
         settings = _settings_io.load_or_empty(home)
         existing = _find(settings, account)
-        if existing is not None and existing.provider is None and existing.tool == tool_id and same_path(full_path(home_path(existing.config_dir, home)), folder):
-            return _repair(settings, existing, tool, real, folder, home)
+        if existing is not None and existing.provider is None and existing.tool == tool_id:
+            own = full_path(home_path(existing.config_dir, home))
+            if source is not None and not same_path(source, own):
+                raise AccountError(f"account '{account}' already has its folder; legion add {tool_id} <folder> copies a folder into a new account")
+            return _repair(settings, existing, tool, real, own, home)
         check_new_id(settings, account)
+        if source is not None:
+            _adopt.adopt(source, folder, tool, say)
         agent = Agent.model_construct(id=account, tool=tool_id, config_dir=str(folder), command=_stored_command(real, tool))
         _launchers.target(agent, tool, home)
         settings.agents.append(agent)
-        _settings_io.save_locked(home, settings)
+        try:
+            _settings_io.save_locked(home, settings)
+        except Exception:
+            if source is not None:
+                shutil.rmtree(folder, ignore_errors=True)
+            raise
         folder.mkdir(parents=True, exist_ok=True)
-    if config_dir is not None:
-        return [f"Existing account folder kept at {config_dir}; open it with 'legion --account {account}'."]
+    if source is not None:
+        return [f"Copied {source} into {folder}; open it with 'legion --account {account}'."]
     return [f"Log in once: {login_command(tool, folder, _stored_command(real, tool), home)}"]
 
 
@@ -214,13 +225,6 @@ def _rebind(settings: PersonalisationSettings, account: str, new_id: Optional[st
             channel.accounts = [new_id if name == account else name for name in channel.accounts]
 
 
-def _move_footprints(home: Path, account: str, new_id: str) -> list[str]:
-    for entry in _footprints.read(home).entries:
-        if entry.kind == "folder" and f"account:{account}" in entry.owners:
-            _footprints.add(home, "folder", entry.path, f"account:{new_id}")
-    return _footprints.remove_owner(home, f"account:{account}")
-
-
 def rename(home: Path, account: str, new_id: str) -> list[str]:
     with _settings_io.writer(home):
         settings = _settings_io.load(home)
@@ -232,9 +236,8 @@ def rename(home: Path, account: str, new_id: str) -> list[str]:
             raise AccountError(f"unknown account '{account}'")
         _rebind(settings, account, new_id)
         old.id = new_id
-        lines = _move_footprints(home, account, new_id)
         _settings_io.save_locked(home, settings)
-    return [*lines, f"Config folder kept at {old.config_dir}; rename it yourself only if you want to."]
+    return [f"Config folder kept at {old.config_dir}; rename it yourself only if you want to."]
 
 
 def remove(home: Path, account: str) -> list[str]:
@@ -243,13 +246,7 @@ def remove(home: Path, account: str) -> list[str]:
         agent = _find(settings, account)
         if agent is None:
             return [f"skip: account remove {account} (already done)"]
-        original = settings.model_copy(deep=True)
         _rebind(settings, account, None)
         settings.agents = [other for other in settings.agents if other.id != account]
         _settings_io.save_locked(home, settings)
-        try:
-            lines = _footprints.remove_owner(home, f"account:{account}")
-        except Exception:
-            _settings_io.save_locked(home, original)
-            raise
-    return [*lines, f"Config folder kept at {agent.config_dir}."]
+    return [f"Config folder kept at {agent.config_dir}."]

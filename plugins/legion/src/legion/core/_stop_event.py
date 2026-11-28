@@ -100,10 +100,10 @@ def running(home: Path) -> list[int]:
     return [process.pid for process in _registered_processes(home)]
 
 
-def has_registered_ancestor(home: Path) -> bool:
+def has_registered_ancestor(home: Path, *, pid: int | None = None) -> bool:
     if not owner_path_safe(run_folder(home), home):
         return False
-    ancestors = {process.pid for process in _process.ancestors(os.getpid())}
+    ancestors = {process.pid for process in _process.ancestors(os.getpid() if pid is None else pid)}
     return any(process.pid in ancestors for process in _registered_processes(home, discard_stale=False))
 
 

@@ -88,4 +88,6 @@ class FakeUv:
             program = self.bin / ("legion.exe" if sys.platform == "win32" else "legion")
             program.parent.mkdir(parents=True, exist_ok=True)
             program.touch()
+            if sys.platform != "win32":
+                program.chmod(0o755)
         return RunResult(exit_code=0, output=output, error="", timed_out=False)

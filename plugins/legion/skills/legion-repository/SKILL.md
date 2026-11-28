@@ -1,6 +1,6 @@
 ---
 name: legion-repository
-description: Use when the owner asks to set up orchestration in a repository, the overseer finds no .legion/configuration, or a fixed repository step lacks a listed script.
+description: Use when the owner asks to set up or dismiss orchestration in a repository, the overseer finds no .legion/configuration, or a fixed repository step lacks a listed script.
 ---
 
 # Repository orchestration setup
@@ -15,6 +15,7 @@ This planner creates and updates repository facts. Load `legion-personalisation`
 - Turn each fixed gate, build, benchmark, or cleanup into an indexed script named in repository workflow; call it instead of rebuilding its commands. See [setup.md](references/setup.md).
 - Scripts check current state first; a repeat reports completed work as skipped and changes nothing.
 - Repository choices live in workflow, personal preferences in notes, account and channel data in owner settings.
+- To take legion out of a repository, run the dismiss command in [setup.md](references/setup.md) after saying its plan; Private loses its history unless `.legion/` was pushed.
 - Private keeps the [rules block](references/rules-file-lines.md) in workflow and never edits tracked repo files; Shared adds it to the repo's rules file.
 
 ## Choose where notes live

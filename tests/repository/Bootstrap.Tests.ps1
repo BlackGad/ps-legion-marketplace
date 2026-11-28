@@ -72,9 +72,15 @@ Invoke-InstallTestCase 'BootstrapParses' {
 
 Invoke-InstallTestCase 'BootstrapArguments' {
     . $bootstrap -NoRun
-    $all = @{ Tools = @('claude', 'codex'); Source = 'owner/repo'; ConfigDir = 'C:\some folder'; Ref = 'main'; HomeRoot = 'C:\h'; DryRun = [switch]$true; Yes = [switch]$true; Update = [switch]$true; Uninstall = [switch]$false; Purge = [switch]$true }
-    $arguments = @(Get-InstallArguments -Parameters $all)
-    Assert-Equal '--home|C:\h|install|--tool|claude,codex|--source|owner/repo|--config-dir|C:\some folder|--ref|main|--dry-run|--yes|--update|--purge' ($arguments -join '|') 'Every option reaches legion install'
+    $all = @{ Source = 'owner/repo'; Ref = 'main'; HomeRoot = 'C:\h'; DryRun = $true; Yes = $true }
+    Assert-Equal '--home|C:\h|install|--source|owner/repo|--ref|main|--dry-run|--yes' (@(Get-InstallArguments -Parameters $all) -join '|') 'Install accepts source, ref and approval options'
+    $all.Update = $true
+    Assert-Equal '--home|C:\h|update|--source|owner/repo|--ref|main|--dry-run|--yes' (@(Get-InstallArguments -Parameters $all) -join '|') 'Update selects the update verb'
+    $all.Update = $false
+    $all.Uninstall = $true
+    Assert-Equal '--home|C:\h|uninstall|--dry-run|--yes' (@(Get-InstallArguments -Parameters $all) -join '|') 'Uninstall selects the uninstall verb'
+    $all.Purge = $true
+    Assert-Equal '--home|C:\h|uninstall|--purge|--dry-run|--yes' (@(Get-InstallArguments -Parameters $all) -join '|') 'Purge uses the uninstall verb'
     Assert-Equal "--home|$HOME|install" (@(Get-InstallArguments -Parameters @{}) -join '|') 'Without -HomeRoot the effective home is still handed over'
 }
 
@@ -89,7 +95,7 @@ Invoke-InstallTestCase 'BootstrapHandsOverToUv' {
             Assert-True ($result.Lines -contains 'downloads=') "A checkout downloads nothing: $text"
             $project = Join-Path $scratch 'checkout/plugins/legion'
             Assert-True ($result.Lines -contains "uv:$project") "uv runs the checkout project: $text"
-            foreach ($word in @('run', '--project', '--frozen', '--quiet', 'legion', 'install', '--tool', 'claude', '--yes', '--home', $scratch)) {
+            foreach ($word in @('run', '--project', '--frozen', '--quiet', 'legion', 'install', '--yes', '--home', $scratch)) {
                 Assert-True ($result.Lines -contains "uv:$word") "uv gets $word"
             }
             Assert-True (@($result.Lines | Where-Object { $_ -like 'uv:env=*temp*env' }).Count -eq 1) "uv gets its own project environment: $text"
@@ -133,8 +139,7 @@ Invoke-InstallTestCase 'RemoteBootstrapDryRun' {
             Assert-True ($result.Lines -contains 'prompts=0') 'A dry run never asks'
             $words = @($result.Lines | Where-Object { $_ -like 'uv:*' } | ForEach-Object { $_.Substring(3) })
             Assert-True ($words[2] -like (Join-Path $scratch 'tmp/*/expanded/*/plugins/legion')) "uv runs the downloaded project: $text"
-            $config = Join-Path $scratch 'config folder'
-            Assert-Equal "run|--project|$($words[2])|--frozen|--quiet|legion|--home|$scratch|install|--tool|claude|--config-dir|$config|--ref|main|--dry-run|--yes|--update" ($words[0..($words.Count - 2)] -join '|') "uv gets the complete dry-run command: $text"
+            Assert-Equal "run|--project|$($words[2])|--frozen|--quiet|legion|--home|$scratch|update|--ref|main|--dry-run|--yes" ($words[0..($words.Count - 2)] -join '|') "uv gets the complete dry-run command: $text"
             $project = [IO.DirectoryInfo]$words[2]
             $temporary = $project.Parent.Parent.Parent.Parent
             Assert-Equal "env=$(Join-Path $temporary.FullName 'env')" $words[-1] 'uv uses a disposable project environment'
@@ -324,7 +329,7 @@ Invoke-InstallTestCase 'BootstrapCleanupWithMissingUvKeepsHomeClean' {
                 $text = $result.Lines -join "`n"
                 Assert-Equal 0 $result.ExitCode "$mode invocation ${invocation}: $text"
                 Assert-True ($text.Contains('temporary')) "Cleanup explains temporary uv on $mode invocation ${invocation}: $text"
-                Assert-True ($result.Lines -contains 'uv:--uninstall') "Cleanup reaches Python on $mode invocation ${invocation}: $text"
+                Assert-True ($result.Lines -contains 'uv:uninstall') "Cleanup reaches Python on $mode invocation ${invocation}: $text"
                 Assert-True ($result.Lines -contains 'uvInstalled=False') "Cleanup leaves no uv in the home on $mode invocation ${invocation}: $text"
                 Assert-True (-not (Test-Path -LiteralPath (Join-Path $scratch '.legion'))) "Cleanup leaves a clean home on $mode invocation ${invocation}: $text"
                 Assert-True (@($result.Lines | Where-Object { $_ -like 'uvUsed=*' -and $_.Contains((Join-Path $scratch 'tmp')) }).Count -eq 1) "Cleanup runs temporary uv on $mode invocation ${invocation}: $text"
@@ -405,14 +410,14 @@ Invoke-InstallTestCase 'ShellBootstrap' {
             # A checkout run with uv on PATH downloads nothing and passes the options through.
             Copy-Item -LiteralPath (Join-Path $repo 'install.sh') -Destination (Join-Path $fakeHome 'checkout/install.sh')
             $env:PATH = $fakeBin + [IO.Path]::PathSeparator + $systemBin
-            $text = @('' | & $shell (Join-Path $fakeHome 'checkout/install.sh') --yes --tools claude --config-dir '/some folder' --main --dry-run 2>&1) -join "`n"
+            $text = @('' | & $shell (Join-Path $fakeHome 'checkout/install.sh') --yes --main --dry-run 2>&1) -join "`n"
             Assert-Equal 0 $LASTEXITCODE "Shell checkout run: $text"
             $logged = (Get-Content -LiteralPath $log) -join '|'
             $words = $logged -split '\|'
             $project = Resolve-LegionDirectoryPath (Join-Path $fakeHome 'checkout/plugins/legion')
             $actualProject = Resolve-LegionDirectoryPath $words[2]
             Assert-True ((Get-LegionPathComparer).Equals($actualProject, $project)) "Shell checkout project: $logged"
-            Assert-True ($logged.StartsWith('run|--project|' + $words[2] + '|--frozen|--quiet|legion|--home|' + $fakeHome + '|install|--yes|--tool|claude|--config-dir|/some folder|--ref|main|--dry-run|env=')) "Shell hand-over: $logged"
+            Assert-True ($logged.StartsWith('run|--project|' + $words[2] + '|--frozen|--quiet|legion|--home|' + $fakeHome + '|install|--ref|main|--dry-run|--yes|env=')) "Shell hand-over: $logged"
             Assert-True (-not (Test-Path $env:FAKE_CURL_LOG)) 'A checkout run downloads nothing'
             Assert-True (@(Get-ChildItem -LiteralPath $systemTemp -Force).Count -eq 0) 'The shell run removes its temporary folder'
             Assert-True (-not (Test-Path -LiteralPath (Join-Path $fakeHome '.legion/temp'))) 'Nothing temporary is made inside .legion'
@@ -427,13 +432,12 @@ Invoke-InstallTestCase 'ShellBootstrap' {
             Assert-True (((Get-Content -LiteralPath $log) -join '|') -like 'run|--project|*/source/plugins/legion|*') 'uv runs the downloaded project'
             Remove-Item $env:FAKE_CURL_LOG
             Remove-Item -LiteralPath $log
-            $config = Join-Path $fakeHome 'config folder'
-            $text = @($script | & $shell -s -- --tools claude --config-dir $config --main --dry-run --yes --update 2>&1) -join "`n"
+            $text = @($script | & $shell -s -- --main --dry-run --yes --update 2>&1) -join "`n"
             Assert-Equal 0 $LASTEXITCODE "Shell remote dry run: $text"
             Assert-Equal 'https://github.com/BlackGad/ps-legion-marketplace/archive/refs/heads/main.tar.gz' ((Get-Content -LiteralPath $env:FAKE_CURL_LOG) -join '|') 'Only the source archive is downloaded'
             $words = @(Get-Content -LiteralPath $log)
             Assert-True (($words[2] -like '*/source/plugins/legion') -and (Test-LegionPathUnder -Path $words[2] -Root $systemTemp)) "uv runs the downloaded project: $($words -join '|')"
-            Assert-Equal "run|--project|$($words[2])|--frozen|--quiet|legion|--home|$fakeHome|install|--tool|claude|--config-dir|$config|--ref|main|--dry-run|--yes|--update" ($words[0..($words.Count - 3)] -join '|') 'uv gets the complete dry-run command'
+            Assert-Equal "run|--project|$($words[2])|--frozen|--quiet|legion|--home|$fakeHome|update|--ref|main|--dry-run|--yes" ($words[0..($words.Count - 3)] -join '|') 'uv gets the complete dry-run command'
             $project = [IO.DirectoryInfo]$words[2]
             $temporary = $project.Parent.Parent.Parent
             Assert-Equal "env=$($temporary.FullName)/env" $words[-2] 'uv uses a disposable project environment'
@@ -476,6 +480,8 @@ Invoke-InstallTestCase 'ShellBootstrap' {
 
             # A purge runs from an environment outside .legion.
             $null = @('' | & $shell (Join-Path $fakeHome 'checkout/install.sh') --yes --uninstall --purge 2>&1)
+            $logged = Get-Content -LiteralPath $log
+            Assert-True (($logged -join '|') -like '*|uninstall|--purge|--yes|env=*') 'Purge uses the uninstall verb'
             $projectEnv = (@(Get-Content -LiteralPath $log | Where-Object { $_ -like 'env=*' })[0]).Substring(4)
             Assert-True ((Test-LegionPathUnder -Path $projectEnv -Root $systemTemp) -and -not (Test-LegionPathUnder -Path $projectEnv -Root (Join-Path $fakeHome '.legion'))) "Purge runs outside .legion: $projectEnv"
 

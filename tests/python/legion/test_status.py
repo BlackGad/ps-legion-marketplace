@@ -12,7 +12,7 @@ from cli_runner import run
 from legion.core._run import RunResult
 
 from legion.services.repository import _lease
-from legion.services.installation import installer
+from legion.services.lifecycle import _targets
 from legion.services.status import _status
 from legion.core import _process, _validate
 from legion.core._settings_models import ChannelDescriptor, PersonalisationSettings, ToolDescriptor
@@ -35,6 +35,7 @@ def test_status_report_matches_status_lines(parity_home: tuple[Path, Path]) -> N
         "accounts",
         "  claude-a  claude  ~/.claude  legion missing",
         "  codex-a  codex  ~/.codex  legion missing",
+        *(["outlanders", *(f"  {row.tool}  {row.config_dir}  legion missing" for row in report.outlanders)] if report.outlanders else []),
         "channels main (telegram) -> claude-a",
         "knowledge: off (not asked)",
         "repo Shared   lease: free   handoff: yes",
@@ -91,7 +92,7 @@ def test_status_without_settings_is_native_and_exits_zero(tmp_path: Path, monkey
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert run(["--home", str(tmp_path / "home"), "status"]) == 0
-    assert capsys.readouterr().out.splitlines() == ["no legion settings yet", "knowledge: off (not asked)", "repo none"]
+    assert capsys.readouterr().out.splitlines() == ["no legion settings yet. Run legion add <tool> to add an account.", "knowledge: off (not asked)", "repo none"]
 
 
 @pytest.mark.parametrize("broken", ["invalid", "extra", "unreadable"])
@@ -132,7 +133,6 @@ def test_configured_status_preserves_home_and_never_launches_a_cli(tmp_path: Pat
         pytest.fail("status started a process without a tracked repository")
 
     monkeypatch.setattr(status_service, "run_command", refuse)
-    monkeypatch.setattr(installer, "_account_target", refuse)
     before = snapshot(home)
     assert run(["--home", str(home), "status"]) == 0
     assert capsys.readouterr().out.splitlines() == [
@@ -217,7 +217,7 @@ def test_installed_versions_use_descriptor_root_and_semantic_order(tmp_path: Pat
     for index, (name, version) in enumerate([("legion", "0.6.0"), ("legion", "0.10.0-beta.2"), ("legion", "0.10.0-beta.10"), ("legion", "0.10.0"), ("other", "99.0.0"), ("legion", "bad")]):
         write(tmp_path / tool.plugin.installed_root / str(index) / "plugin.json", json.dumps({"name": name, "version": version}))
     write(tmp_path / tool.plugin.installed_root / "broken/plugin.json", "{")
-    assert _status.installed_version(tmp_path, tool) == "0.10.0"
+    assert _targets.installed_version(tmp_path, tool) == "0.10.0"
 
 
 @pytest.mark.parametrize("registration", ["directory", "disabled-value", "not-enabled", "remote", "broken", "missing-manifest"])
@@ -226,7 +226,10 @@ def test_copilot_local_marketplace_takes_precedence(tmp_path: Path, registration
     assert tool.plugin.installed_root is not None
     write(tmp_path / tool.plugin.installed_root / "cached/plugin.json", '{"name":"legion","version":"9.0.0"}')
     marketplace = tmp_path / "local marketplace"
-    write(marketplace / ".claude-plugin/marketplace.json", '{"plugins":[{"name":"other","source":{"source":"github","repo":"example/other"}},{"name":"legion","source":"./plugins/legion"}]}')
+    write(
+        marketplace / ".claude-plugin/marketplace.json",
+        '{"name":"ps-legion-marketplace","plugins":[{"name":"other","source":{"source":"github","repo":"example/other"}},{"name":"legion","source":"./plugins/legion"}]}',
+    )
     if registration != "missing-manifest":
         write(marketplace / "plugins/legion/plugin.json", '{"name":"legion","version":"0.7.0"}')
     enabled = {} if registration == "not-enabled" else {"legion@ps-legion-marketplace": registration != "disabled-value"}
@@ -239,7 +242,7 @@ def test_copilot_local_marketplace_takes_precedence(tmp_path: Path, registration
     }
     write(tmp_path / "settings.json", "{" if registration == "broken" else json.dumps(data))
     expected = None if registration == "missing-manifest" else "0.7.0" if registration in ("directory", "disabled-value") else "9.0.0"
-    assert _status.installed_version(tmp_path, tool) == expected
+    assert _targets.installed_version(tmp_path, tool) == expected
 
 
 @pytest.fixture

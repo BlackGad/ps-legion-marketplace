@@ -1,0 +1,12 @@
+# Fresh Linux owner machine: Python 3.12, uv, Node and the three CLIs, no credentials.
+FROM python:3.12-slim-bookworm
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+RUN npm install -g @anthropic-ai/claude-code @openai/codex @github/copilot && npm cache clean --force
+RUN useradd --create-home --shell /bin/bash owner && mkdir /work && chown owner /work
+USER owner
+WORKDIR /work

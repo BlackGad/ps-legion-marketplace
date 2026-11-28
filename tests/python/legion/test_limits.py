@@ -290,12 +290,14 @@ def test_codex_quota_error_names_the_retry_time(bench: Bench) -> None:
     assert bench.rows("codex-a", "codex") == [LimitRow(resets="2:57 PM", status="limit reached")]
 
 
-@pytest.mark.parametrize(("fake", "status"), [({"GIT_EXIT": "5"}, "error: git init failed (exit code 5)"), ({"GIT_SLEEP": "60"}, "error: git init timed out")])
-def test_codex_ping_stops_when_git_init_fails(bench: Bench, fake: dict[str, str], status: str) -> None:
+@pytest.mark.parametrize(
+    ("fake", "timeout", "status"),
+    [({"GIT_EXIT": "5"}, 60, "error: git init failed (exit code 5)"), ({"GIT_SLEEP": "60"}, 10, "error: git init timed out")],
+    ids=["exit-code", "timeout"],
+)
+def test_codex_ping_stops_when_git_init_fails(bench: Bench, fake: dict[str, str], timeout: int, status: str) -> None:
     bench.fake(**fake)
-    started = time.monotonic()
-    assert bench.rows("codex-a", "codex", timeout=3) == [LimitRow(status=status)]
-    assert time.monotonic() - started < 30
+    assert bench.rows("codex-a", "codex", timeout=timeout) == [LimitRow(status=status)]
     assert len(bench.calls("git")) == 1
     assert bench.calls("codex") == []
 

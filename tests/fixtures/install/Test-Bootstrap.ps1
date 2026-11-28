@@ -99,7 +99,7 @@ function Show-Result {
     Write-Output "tempLeft=$($left.Count)"
 }
 
-$parameters = @{ Yes = [switch]$true; Tools = @('claude'); HomeRoot = $Scratch }
+$parameters = @{ Yes = [switch]$true; HomeRoot = $Scratch }
 switch ($Mode) {
     'checkout' { Invoke-InstallBootstrap -Parameters $parameters -CheckoutRoot (Join-Path $Scratch 'checkout') }
     'remote' { Invoke-InstallBootstrap -Parameters $parameters -CheckoutRoot '' }
@@ -107,7 +107,6 @@ switch ($Mode) {
     'remote-dry-run' {
         Set-NoUvPath
         $env:PATH = (Join-Path $Scratch 'bin') + [IO.Path]::PathSeparator + $env:PATH
-        $parameters.ConfigDir = Join-Path $Scratch 'config folder'
         $parameters.Ref = 'main'
         $parameters.DryRun = [switch]$true
         $parameters.Update = [switch]$true

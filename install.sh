@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX entry point: obtain uv, then hand every option to the Python `legion install` command.
+# POSIX entry point: obtain uv, then call the selected Python legion command.
 # Hand-built, reason: this runs before uv and Python exist, so it cannot use any Python library; it stays small on purpose.
 set -eu
 
@@ -77,27 +77,37 @@ install_uv() {
 }
 
 main() {
-    yes=0; dry_run=0; cleanup=0; ref=stable
-    # Rotate the original arguments once, appending their `legion install` spelling.
-    remaining=$#
-    while [ "$remaining" -gt 0 ]; do
-        option=$1; shift; remaining=$((remaining - 1))
+    yes=0; dry_run=0; cleanup=0; update=0; purge=0; ref=stable; source=
+    while [ "$#" -gt 0 ]; do
+        option=$1
+        shift
         case "$option" in
-            -y|--yes) yes=1; set -- "$@" --yes ;;
-            --dry-run) dry_run=1; set -- "$@" --dry-run ;;
-            --main) ref=main; set -- "$@" --ref main ;;
-            --update) set -- "$@" --update ;;
-            --uninstall) cleanup=1; set -- "$@" --uninstall ;;
-            --purge) cleanup=1; set -- "$@" --purge ;;
-            --tools|--config-dir)
-                [ "$remaining" -gt 0 ] || fail "Missing value for $option"
-                value=$1; shift; remaining=$((remaining - 1))
-                case "$value" in ''|--*) fail "Missing value for $option" ;; esac
-                if [ "$option" = --tools ]; then set -- "$@" --tool "$value"
-                else set -- "$@" --config-dir "$value"; fi ;;
+            -y|--yes) yes=1 ;;
+            --dry-run) dry_run=1 ;;
+            --main) ref=main ;;
+            --source)
+                [ "$#" -gt 0 ] && [ -n "$1" ] || fail 'Missing value for --source.'
+                source=$1
+                shift ;;
+            --update) update=1 ;;
+            --uninstall) cleanup=1 ;;
+            --purge) cleanup=1; purge=1 ;;
             *) fail "Unknown option: $option" ;;
         esac
     done
+
+    if [ "$cleanup" = 1 ]; then
+        [ "$update" = 0 ] || fail 'Choose either --update or --uninstall/--purge.'
+        set -- uninstall
+        [ "$purge" = 0 ] || set -- "$@" --purge
+    else
+        if [ "$update" = 1 ]; then set -- update
+        else set -- install; fi
+        [ "$ref" = stable ] || set -- "$@" --ref main
+        [ -z "$source" ] || set -- "$@" --source "$source"
+    fi
+    [ "$dry_run" = 0 ] || set -- "$@" --dry-run
+    [ "$yes" = 0 ] || set -- "$@" --yes
 
     command -v curl >/dev/null 2>&1 || fail 'curl is required.'
     case "$HOME" in /*) ;; *) fail 'HOME must be an absolute path.' ;; esac
@@ -159,8 +169,8 @@ main() {
     # The one-line command consumes stdin; the installer's questions come from the terminal.
     status=0
     if ( : </dev/tty ) 2>/dev/null; then
-        "$uv" run --project "$project" --frozen --quiet legion --home "$HOME" install "$@" </dev/tty || status=$?
-    else "$uv" run --project "$project" --frozen --quiet legion --home "$HOME" install "$@" || status=$?; fi
+        "$uv" run --project "$project" --frozen --quiet legion --home "$HOME" "$@" </dev/tty || status=$?
+    else "$uv" run --project "$project" --frozen --quiet legion --home "$HOME" "$@" || status=$?; fi
     return "$status"
 }
 

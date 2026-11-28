@@ -1,12 +1,12 @@
 # Copilot CLI accounts
 
-Add and adopt through `legion add`, as [create.md](../../legion-personalisation/references/create.md) describes, and follow the [shared account rules](../../legion-personalisation/references/fields.md#account-setup). For a new folder the owner logs in once by starting `copilot` with `COPILOT_HOME` set to the account's folder; setup's `log in:` column shows the command. Never handle tokens or credential files.
+Add and copy a folder through `legion add`, as [create.md](../../legion-personalisation/references/create.md) describes, and follow the [shared account rules](../../legion-personalisation/references/fields.md#account-setup). For a new folder the owner logs in once by starting `copilot` with `COPILOT_HOME` set to the account's folder; setup's `log in:` column shows the command. Never handle tokens or credential files.
 
 ## Foundry agent
 
 Use this flow instead of the subscription login flow above. One agent uses one endpoint. Copilot Foundry agents support **Claude deployments only**. GPT deployments are out of scope. Use `legion --home <home>` for an alternate home.
 
-Use these commands for a Foundry provider configuration request; ordinary setup can adopt an existing folder and keep its provider settings. Ask the model question and discover deployments as [Foundry model mapping](../../legion-personalisation/references/foundry-models.md) says. These examples show explicit choices:
+Use these commands for a Foundry provider configuration request; ordinary setup can copy an existing folder and keep its provider settings. Ask the model question and discover deployments as [Foundry model mapping](../../legion-personalisation/references/foundry-models.md) says. These examples show explicit choices:
 
 ```powershell
 legion account add --id <id> --tool copilot --provider foundry --endpoint https://<resource>.cognitiveservices.azure.com --deployment claude-opus-x --deployment claude-sonnet-x --default claude-opus-x

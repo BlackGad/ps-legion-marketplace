@@ -6,6 +6,7 @@
   "allowRules": ["Bash(LEGION_ROLE=member *)"],
   "plugin": {
     "defaultConfigDir": "~/.claude",
+    "adoptRewrite": ["plugins/installed_plugins.json", "plugins/known_marketplaces.json"],
     "installedRoot": "plugins/cache/ps-legion-marketplace/legion",
     "marketplaceAddRef": ["plugin", "marketplace", "add", "{source}#{ref}"],
     "marketplaceAdd": ["plugin", "marketplace", "add", "{source}"],

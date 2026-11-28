@@ -5,7 +5,8 @@
   "overseerArgs": ["-i"],
   "plugin": {
     "defaultConfigDir": "~/.copilot",
-    "installedRoot": "installed-plugins",
+    "adoptRewrite": ["config.json"],
+    "installedRoot": "installed-plugins/ps-legion-marketplace/legion",
     "marketplaceAddRef": ["plugin", "marketplace", "add", "{source}#{ref}"],
     "marketplaceAdd": ["plugin", "marketplace", "add", "{source}"],
     "uninstall": ["plugin", "uninstall", "legion@ps-legion-marketplace"],

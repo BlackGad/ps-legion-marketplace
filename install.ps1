@@ -1,7 +1,5 @@
 param(
-    [string[]]$Tools,
     [string]$Source = 'BlackGad/ps-legion-marketplace',
-    [string]$ConfigDir,
     [switch]$DryRun,
     [switch]$Yes,
     [switch]$NoRun,
@@ -13,7 +11,7 @@ param(
 )
 
 # The Windows bootstrap runs in the built-in Windows PowerShell 5.1 (or PowerShell 7).
-# It only obtains uv, then hands every option to the Python `legion install` command.
+# It only obtains uv, then calls the selected Python legion command.
 # Hand-built, reason: this runs before uv and Python exist, so it cannot use any Python library; it stays small on purpose.
 
 function Get-InstallHome {
@@ -215,20 +213,24 @@ function Get-InstallProject {
     return $project
 }
 
-# The options of this script, as the `legion install` command spells them.
+# Select the Python verb and pass the options it accepts.
 function Get-InstallArguments {
     param([Collections.IDictionary]$Parameters)
     # Always the home this script used, so a redirected $HOME reaches Python too.
     $homeRoot = $Parameters.HomeRoot
     if (-not $homeRoot) { $homeRoot = $HOME }
-    $arguments = @('--home', $homeRoot, 'install')
-    if ($Parameters.Tools) { $arguments += @('--tool', (@($Parameters.Tools) -join ',')) }
-    if ($Parameters.Source) { $arguments += @('--source', $Parameters.Source) }
-    if ($Parameters.ConfigDir) { $arguments += @('--config-dir', $Parameters.ConfigDir) }
-    if ($Parameters.Ref) { $arguments += @('--ref', $Parameters.Ref) }
-    foreach ($switch in @('DryRun', 'Yes', 'Update', 'Uninstall', 'Purge')) {
-        if ($Parameters[$switch]) { $arguments += '--' + (($switch -creplace '([a-z])([A-Z])', '$1-$2').ToLowerInvariant()) }
+    $cleanup = $Parameters.Uninstall -or $Parameters.Purge
+    if ($Parameters.Update -and $cleanup) { throw 'Choose either -Update or -Uninstall/-Purge.' }
+    $verb = if ($cleanup) { 'uninstall' } elseif ($Parameters.Update) { 'update' } else { 'install' }
+    $arguments = @('--home', $homeRoot, $verb)
+    if ($cleanup) {
+        if ($Parameters.Purge) { $arguments += '--purge' }
+    } else {
+        if ($Parameters.Source) { $arguments += @('--source', $Parameters.Source) }
+        if ($Parameters.Ref) { $arguments += @('--ref', $Parameters.Ref) }
     }
+    if ($Parameters.DryRun) { $arguments += '--dry-run' }
+    if ($Parameters.Yes) { $arguments += '--yes' }
     return $arguments
 }
 

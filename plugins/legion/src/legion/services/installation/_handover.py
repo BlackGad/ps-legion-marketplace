@@ -24,7 +24,7 @@ WINDOWS_DELETE_ATTEMPTS = 30
 FAILURE_PREFIX = "legion handover failed:"
 
 
-def start(command: list[str], cleanup: list[Path], *, purge: list[Path], log: Path | None) -> None:
+def start(command: list[str], cleanup: list[Path], *, purge: list[Path], log: Path | None, receipt: tuple[Path, str] | None = None) -> None:
     if not (command or purge):
         return
     python = getattr(sys, "_base_executable", sys.executable)
@@ -37,7 +37,7 @@ def start(command: list[str], cleanup: list[Path], *, purge: list[Path], log: Pa
             if command:
                 raise
             log = None
-    args = json.dumps([_parent_pids(), UV_WAIT_SECONDS, list(map(str, cleanup)), list(map(str, purge)), command, str(log) if log else None])
+    args = json.dumps([_parent_pids(), UV_WAIT_SECONDS, list(map(str, cleanup)), list(map(str, purge)), command, str(log) if log else None, (str(receipt[0]), receipt[1]) if receipt else None])
     program = [python, "-I", "-c", code, args]
     if sys.platform == "win32":
         subprocess.Popen(program, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
@@ -95,7 +95,7 @@ def _remove(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def _purge(path: Path) -> None:
+def purge_folder(path: Path) -> None:
     if path.parent.is_symlink() or path.parent.is_junction():
         raise OSError(f"Parent folder is a link: {path.parent}")
     attempts = WINDOWS_DELETE_ATTEMPTS if sys.platform == "win32" else 1
@@ -135,18 +135,25 @@ def _run(pids: list[int], timeout: float, command: list[str], cleanup: list[str]
 
 
 def main() -> int:
-    pids, timeout, cleanup, purge, command, log = json.loads(sys.argv[1])
+    pids, timeout, cleanup, purge, command, log, receipt = json.loads(sys.argv[1])
     with ExitStack() as files:
         try:
             stream = files.enter_context(open(log or os.devnull, "a", encoding="utf-8"))
         except OSError:
             stream = files.enter_context(open(os.devnull, "a", encoding="utf-8"))
         result = _run(pids, timeout, command, cleanup, stream)
+        if not result and receipt:
+            path, content = receipt
+            try:
+                Path(path).write_text(content, encoding="utf-8")
+            except OSError as error:
+                print(f"{FAILURE_PREFIX} could not record the installed source: {error}", file=stream)
+                result = 1
     if result:
         return result
     for path in map(Path, purge):
         try:
-            _purge(path)
+            purge_folder(path)
         except OSError as error:
             result = 1
             if log:

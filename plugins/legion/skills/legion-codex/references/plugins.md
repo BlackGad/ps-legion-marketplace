@@ -1,6 +1,6 @@
 # Codex plugins
 
-With knowledge enabled, the update targets the Legion marketplace in each selected account. Otherwise `codex plugin marketplace upgrade` refreshes all configured Git marketplaces in that account. Explain the scope before the owner approves an update.
+Install and update run `codex plugin marketplace upgrade` without a name, which refreshes the configured Git marketplaces in that account and skips marketplaces added from a local folder. Codex refuses to upgrade a local marketplace by name.
 
 After the owner logs in to the selected account, use the account-specific [installer flow](accounts.md). For a manual install in that account's environment:
 

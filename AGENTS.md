@@ -43,11 +43,11 @@ Versions and the changelog are made by the release workflow. Task branches and p
 
 Tests never call real `az`, `claude`, `codex`, `copilot`, winget or the network. Use the fakes in `tests/` and replace download functions.
 
-Python uses uv only (Python >=3.12). The root `pyproject.toml` holds the tool settings, including standard-mode Pyright. From the repository root, set `UV_PROJECT_ENVIRONMENT` to an absolute path outside the plugin cache, such as `(Join-Path $PWD '.agents/temp/python/env')`. Before pytest, set `LEGION_TEST_PWSH` to the absolute pwsh path, such as `(Get-Command pwsh).Source`.
+Python uses uv only (Python >=3.12). The root `pyproject.toml` holds the tool settings, including standard-mode Pyright. From the repository root, set `UV_PROJECT_ENVIRONMENT` to an absolute path outside the plugin cache, such as `(Join-Path $PWD '.legion/temp/python/env')`. Before pytest, set `LEGION_TEST_PWSH` to the absolute pwsh path, such as `(Get-Command pwsh).Source`.
 
 ```powershell
-uv run --project plugins/legion --frozen --extra mcp --group dev ruff check plugins/legion/src tests/python tests/integration tools
-uv run --project plugins/legion --frozen --extra mcp --group dev ruff format --check plugins/legion/src tests/python tests/integration tools
+uv run --project plugins/legion --frozen --extra mcp --group dev ruff check plugins/legion/src tests/python tests/integration tools tests/playground
+uv run --project plugins/legion --frozen --extra mcp --group dev ruff format --check plugins/legion/src tests/python tests/integration tools tests/playground
 uv run --project plugins/legion --frozen --extra mcp --group dev pyright --project pyproject.toml
 uv run --project plugins/legion --frozen --extra mcp --group dev pytest
 ```
@@ -63,7 +63,7 @@ CI runs the test gates on Windows, macOS and Linux and parses `install.ps1` with
 ## Not committed
 
 - Design specs, implementation plans and verification notes (`docs/specs/`, `docs/plans/`, `docs/superpowers/`, `docs/verification/`) are temporary working documents; they stay local and are ignored.
-- Scratch, logs, reports and worktrees go in `.agents/temp/` (ignored).
+- Legion scratch, logs, reports and worktrees go in `.legion/temp/` (ignored).
 
 ## Git
 

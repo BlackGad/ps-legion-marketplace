@@ -41,10 +41,8 @@ def is_stock(command: Path, tool: ToolDescriptor) -> bool:
     return stock is not None and same_path(resolve_directory(command), resolve_directory(stock))
 
 
-def registered_command(agent: Agent, home: Path) -> Optional[Path]:
-    if agent.command is None:
-        return None
-    command = full_path(home_path(agent.command, home))
+def registered_command(path: str, home: Path) -> Optional[Path]:
+    command = full_path(home_path(path, home))
     return command if command.is_file() else None
 
 
@@ -56,7 +54,7 @@ def command_prefix(program: Path) -> tuple[Path, list[str]]:
 
 def target(agent: Agent, tool: ToolDescriptor, home: Path) -> Path:
     if agent.command is not None:
-        command = registered_command(agent, home)
+        command = registered_command(agent.command, home)
         if command is not None:
             return command
         raise LauncherError(f"target needed: {agent.id}; ask the owner for the registered executable")

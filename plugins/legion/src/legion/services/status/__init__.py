@@ -7,8 +7,8 @@ from pydantic import BaseModel, ConfigDict
 from legion.services.repository import _lease
 from legion.services.installation import _knowledge_hub, _uv_tool
 from legion.services.status import _status
+from legion.services.lifecycle import _targets
 from legion.core._home import (
-    home_path,
     legion_home,
     settings_path,
 )
@@ -28,6 +28,14 @@ class AccountStatus(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: str
+    tool: str
+    config_dir: str
+    legion_version: Optional[str]
+
+
+class OutlanderStatus(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     tool: str
     config_dir: str
     legion_version: Optional[str]
@@ -63,6 +71,7 @@ class StatusReport(BaseModel):
 
     settings: SettingsState
     accounts: list[AccountStatus]
+    outlanders: list[OutlanderStatus]
     channels: list[ChannelStatus]
     repository: RepositoryStatus
     knowledge: KnowledgeStatus
@@ -114,11 +123,14 @@ def status(repo: Path, home: Optional[Path] = None) -> StatusReport:
         for agent in settings.agents:
             matches = [tool for tool in tools if tool.id == agent.tool]
             tool = matches[0] if len(matches) == 1 else None
-            config = home_path(agent.config_dir, home)
-            version = _status.installed_version(config, tool) if tool else None
-            if knowledge and (tool is None or _status.installed_version(config, tool, "wiki") is None):
+            config = _targets.account_folder(home, agent)
+            version = _targets.installed_version(config, tool) if tool else None
+            if knowledge and (tool is None or (not _targets.is_default_folder(home, tool, config) and _targets.installed_version(config, tool, "wiki") is None)):
                 missing_wiki.append(agent.id)
             accounts.append(AccountStatus(id=agent.id, tool=agent.tool, config_dir=agent.config_dir, legion_version=version))
+    outlanders = [
+        OutlanderStatus(tool=tool.id, config_dir=str(target[0]), legion_version=_targets.installed_version(target[0], tool)) for tool in tools if (target := _targets.outlander(home, tool)) is not None
+    ]
     warnings = _status.channel_warnings(settings, home, tools) if settings else []
     handover_failure = _uv_tool.handover_failure(home)
     if handover_failure:
@@ -129,6 +141,7 @@ def status(repo: Path, home: Optional[Path] = None) -> StatusReport:
     return StatusReport(
         settings=SettingsState(state=state, path=str(file)),
         accounts=accounts,
+        outlanders=outlanders,
         channels=[ChannelStatus(id=channel.id, kind=channel.kind, accounts=channel.accounts) for channel in settings.channels] if settings else [],
         repository=repository_status(repo),
         knowledge=KnowledgeStatus(

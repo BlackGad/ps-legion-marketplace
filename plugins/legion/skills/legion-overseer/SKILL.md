@@ -46,6 +46,8 @@ Follow [pending results](references/pending-results.md) for every promised futur
 4. Consult `legion-knowledge` at research, after two failed attempts or a familiar failure, and at close-out. Save milestone evidence and the exact next action as each step changes. Archive finished detail using [takeover.md](references/takeover.md).
 5. Before ending, confirm the handoff reflects the actual stage, no completed row remains “running,” fixed steps used indexed scripts, and the lease is released only when the owner ends overseer work or hands over, not while waiting for the owner.
 
+When the owner authorizes you to update your own launched session, use [legion-update](../legion-update/SKILL.md). Save the handoff and keep the lease while Legion takes over the restart. When you come back, take the stale lease, read the handoff and update result, and tell the owner what happened on the console and every connected channel before resuming work.
+
 ## Stop and verification
 
 Stop and tell the owner if the lease is held or foreign. If repo configuration is missing, load `legion-repository`; if owner personalisation is missing, load `legion-personalisation`. Bring a legion member's scope or public API question to the owner. If no legion account is usable, follow [task-loop.md](references/task-loop.md) for ad hoc work or [the execution choice](references/milestone-flow.md#execution-choice) for a milestone. If no fallback is chosen or available, record the pause and wait. Do not dispatch from an unresolved handoff row.

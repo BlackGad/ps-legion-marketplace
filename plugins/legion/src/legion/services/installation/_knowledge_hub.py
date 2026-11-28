@@ -81,14 +81,14 @@ def _is_own_repository(hub: Path) -> bool:
     return result.returncode == 0 and same_path(resolve_directory(Path(result.stdout.strip())), resolve_directory(hub))
 
 
-def _track(hub: Path, lines: list[str]) -> None:
+def _track(hub: Path, lines: list[str]) -> bool:
     if shutil.which("git") is None:
         lines.append("knowledge: git is not installed, so the hub has no history yet (knowledge still works)")
-        return
+        return False
     own = _is_own_repository(hub)
     if own and _git(hub, "rev-parse", "--verify", "HEAD").returncode == 0:
         lines.append("skip: knowledge hub git repository (already done)")
-        return
+        return False
     if not own:
         _run(hub, "init")
     ignore = hub / ".gitignore"
@@ -102,9 +102,10 @@ def _track(hub: Path, lines: list[str]) -> None:
     _run(hub, "add", "-A")
     _run(hub, "commit", "-m", "chore: start the knowledge hub history")
     lines.append("done: knowledge hub git repository")
+    return True
 
 
-def initialize(home: Path, lines: list[str]) -> None:
+def initialize(home: Path, lines: list[str]) -> bool:
     hub = home_path(HUB_PATH, home)
     changed = not (hub / "topics").is_dir()
     (hub / "topics").mkdir(parents=True, exist_ok=True)
@@ -117,7 +118,7 @@ def initialize(home: Path, lines: list[str]) -> None:
             pass
     lines.append("done: knowledge hub" if changed else "skip: knowledge hub (already done)")
 
-    _track(hub, lines)
+    tracked = _track(hub, lines)
 
     path = home / ".config/llm-wiki/config.json"
     data = _pointer(path)
@@ -125,10 +126,12 @@ def initialize(home: Path, lines: list[str]) -> None:
     if not value:
         _write_pointer(path, {**data, "hub_path": HUB_PATH}, data)
         lines.append("done: llm-wiki hub pointer")
+        changed = True
     elif _matches(value, home):
         lines.append("skip: llm-wiki hub pointer (already done)")
     else:
         lines.append(f"knowledge: keeping the existing llm-wiki hub pointer to {value}")
+    return changed or tracked
 
 
 def purge(home: Path, lines: list[str]) -> None:

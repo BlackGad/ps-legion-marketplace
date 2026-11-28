@@ -214,6 +214,7 @@ class JsonListing(ToolModel):
 class Plugin(ToolModel):
     default_config_dir: Optional[Annotated[str, Field(pattern=rf"^{NO_PARENT}~/[^:]+$")]] = None
     installed_root: Optional[Annotated[str, Field(pattern=rf"^(?![/\\]|[A-Za-z]:|~[/\\]){NO_PARENT}.+$")]] = None
+    adopt_rewrite: Optional[UniqueItems[list[RelativeFolder]]] = None
     marketplace_add: list[str]
     marketplace_add_ref: list[str]
     marketplace_remove: list[str]

@@ -162,3 +162,20 @@ def _age_seconds(path: Path) -> float:
         return time.time() - path.stat().st_mtime
     except OSError:
         return float("inf")
+
+
+# The live session that holds the lease, unless it is the caller; None when the lease is free, stale or the caller's own.
+def other_holder(repo: Path) -> Optional[str]:
+    current = state(repo)
+    if current.state != "held":
+        return None
+    found = current.lease
+    if found is None:
+        return "an unreadable lease"
+    try:
+        pid, started = _owner(None)
+    except LeaseError:
+        pid, started = None, None
+    if started is not None and found.process_started_at is not None and found.pid == pid and same_start_time(found.process_started_at, started):
+        return None
+    return f"{found.tool} {found.account} since {found.started_at}"

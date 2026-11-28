@@ -8,7 +8,7 @@ import signal
 import subprocess
 import sys
 import sysconfig
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Optional
 
@@ -57,13 +57,23 @@ def run_foreground(command: str, arguments: Sequence[str]) -> int:
 
 # Return exit code -1 and timed_out when the timeout kills the process tree.
 # A .cmd or .bat runs through cmd.exe with every character kept literal; a line break cannot pass and raises ValueError.
-def run_command(command: str, arguments: Sequence[str], timeout: Optional[float] = None, env: Optional[Mapping[str, str]] = None, cwd: Optional[Path] = None) -> RunResult:
+def run_command(
+    command: str,
+    arguments: Sequence[str],
+    timeout: Optional[float] = None,
+    env: Optional[Mapping[str, str]] = None,
+    cwd: Optional[Path] = None,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> RunResult:
+    if progress is not None and timeout is not None:
+        raise ValueError("Live output requires a command without a timeout")
     on_windows = sys.platform == "win32"
     process = subprocess.Popen(
         _native_command(command, arguments),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT if progress is not None else subprocess.PIPE,
         env=env,
         cwd=cwd,
         start_new_session=not on_windows,
@@ -79,6 +89,17 @@ def run_command(command: str, arguments: Sequence[str], timeout: Optional[float]
             process.communicate()
             raise
     try:
+        if progress is not None:
+            assert process.stdout is not None
+            try:
+                with process.stdout:
+                    for line in process.stdout:
+                        progress(_text(line).rstrip("\r\n"))
+                return RunResult(exit_code=process.wait(), output="", error="", timed_out=False)
+            except BaseException:
+                _kill_tree(process, job)
+                process.wait()
+                raise
         try:
             output, error = process.communicate(timeout=timeout)
             timed_out = False

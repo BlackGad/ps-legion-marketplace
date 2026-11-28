@@ -1,0 +1,19 @@
+# escape=`
+# Fresh Windows owner machine: PowerShell 5.1 (built in) and 7, Python 3.12, uv, Node, git and the three CLIs, no credentials.
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+SHELL ["powershell", "-NoProfile", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+RUN Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip -OutFile p.zip; `
+    Expand-Archive p.zip C:\pwsh; Remove-Item p.zip; `
+    Invoke-WebRequest https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe -OutFile py.exe; `
+    Start-Process py.exe -ArgumentList '/quiet','InstallAllUsers=1','TargetDir=C:\python','PrependPath=0' -Wait; Remove-Item py.exe; `
+    Invoke-WebRequest https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip -OutFile uv.zip; `
+    Expand-Archive uv.zip C:\uv; Remove-Item uv.zip; `
+    Invoke-WebRequest https://nodejs.org/dist/v22.12.0/node-v22.12.0-win-x64.zip -OutFile n.zip; `
+    Expand-Archive n.zip C:\; Rename-Item C:\node-v22.12.0-win-x64 C:\node; Remove-Item n.zip; `
+    Invoke-WebRequest https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/MinGit-2.47.1-64-bit.zip -OutFile g.zip; `
+    Expand-Archive g.zip C:\git; Remove-Item g.zip
+ENV NPM_CONFIG_PREFIX=C:\node
+ENV PATH="C:\Windows\system32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0;C:\pwsh;C:\python;C:\python\Scripts;C:\uv;C:\node;C:\git\cmd"
+RUN npm install -g @anthropic-ai/claude-code @openai/codex @github/copilot; npm cache clean --force
+RUN New-Item -ItemType Directory C:\work | Out-Null
+WORKDIR C:\work

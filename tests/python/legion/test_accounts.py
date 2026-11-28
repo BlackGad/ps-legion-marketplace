@@ -17,7 +17,6 @@ from launcher_fakes import (
 )
 
 from legion.services.accounts import _accounts
-from legion.services.repository import _footprints
 from legion.core import _settings_io
 from legion.core._home import settings_path
 
@@ -112,11 +111,11 @@ def test_add_with_a_command_sets_the_command(world: World, capsys: pytest.Captur
     folder = world.base / "existing"
     folder.mkdir()
     assert account(world, "add", "--id", "codex-a", "--tool", "codex", "--command", str(world.custom), "--config-dir", str(folder)) == 0
-    assert says(capsys)[0] == f"Existing account folder kept at {folder}; open it with 'legion --account codex-a'.\n"
-    assert world.agents() == [{"id": "codex-a", "tool": "codex", "configDir": str(folder), "command": str(world.custom)}]
+    assert says(capsys)[0].splitlines()[-1] == f"Copied {folder} into {world.folder('codex-a')}; open it with 'legion --account codex-a'."
+    assert world.agents() == [{"id": "codex-a", "tool": "codex", "configDir": str(world.folder("codex-a")), "command": str(world.custom)}]
     # On an existing account it is the repair path: the stored command is replaced by the registered one.
     other = fake_cli(world.base / "other", "other-codex")
-    assert account(world, "add", "--id", "codex-a", "--tool", "codex", "--command", str(other), "--config-dir", str(folder)) == 0
+    assert account(world, "add", "--id", "codex-a", "--tool", "codex", "--command", str(other)) == 0
     assert says(capsys)[0].splitlines() == ["wrote: command of account codex-a"]
     assert world.agents()[0]["command"] == str(other)
 
@@ -126,35 +125,38 @@ def test_add_with_the_stock_command_clears_the_stored_command(world: World, caps
     folder.mkdir()
     assert account(world, "add", "--id", "codex-a", "--tool", "codex", "--command", str(world.custom), "--config-dir", str(folder)) == 0
     stock = world.tools / ("codex.cmd" if WINDOWS else "codex")
-    assert account(world, "add", "--id", "codex-a", "--tool", "codex", "--command", str(stock), "--config-dir", str(folder)) == 0
+    assert account(world, "add", "--id", "codex-a", "--tool", "codex", "--command", str(stock)) == 0
     assert "command" not in world.agents()[0]
     capsys.readouterr()
 
 
-def test_adopting_an_existing_folder_records_its_full_path(world: World, capsys: pytest.CaptureFixture[str]) -> None:
+def test_adopting_an_existing_folder_copies_it_into_the_account(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     folder = world.base / "existing account"
     folder.mkdir()
     (folder / "settings.json").write_text('{"theme":"dark"}', encoding="utf-8")
     assert add(world, "claude-existing", "claude", "--config-dir", str(folder)) == 0
-    assert says(capsys)[0] == f"Existing account folder kept at {folder}; open it with 'legion --account claude-existing'.\n"
-    assert world.agents() == [{"id": "claude-existing", "tool": "claude", "configDir": str(folder)}]
-    assert not world.folder("claude-existing").exists()
+    target = world.folder("claude-existing")
+    assert says(capsys)[0].splitlines() == [f"copying {folder} into {target}", f"Copied {folder} into {target}; open it with 'legion --account claude-existing'."]
+    assert world.agents() == [{"id": "claude-existing", "tool": "claude", "configDir": str(target)}]
+    assert (target / "settings.json").read_text(encoding="utf-8") == '{"theme":"dark"}'
     assert (folder / "settings.json").read_text(encoding="utf-8") == '{"theme":"dark"}'
     before = world.settings_bytes()
-    assert add(world, "claude-existing", "claude", "--config-dir", str(folder)) == 0
+    assert add(world, "claude-existing", "claude", "--config-dir", str(target)) == 0
     assert says(capsys) == ("skip: account claude-existing (already done)\n", "")
     assert world.settings_bytes() == before
 
 
-def test_a_relative_or_home_config_dir_is_stored_as_a_full_path(world: World) -> None:
+def test_a_relative_or_home_config_dir_is_copied(world: World) -> None:
     (world.base / "existing account").mkdir()
     (world.home / "from-home").mkdir()
+    (world.home / "from-home" / "marker.txt").write_text("home", encoding="utf-8")
     assert add(world, "codex-a", "codex", "--config-dir", "./existing account") == 0
     assert add(world, "codex-b", "codex", "--config-dir", "~/from-home") == 0
-    assert [entry["configDir"] for entry in world.agents()] == [str(world.base / "existing account"), str(world.home / "from-home")]
+    assert [entry["configDir"] for entry in world.agents()] == [str(world.folder("codex-a")), str(world.folder("codex-b"))]
+    assert (world.folder("codex-b") / "marker.txt").read_text(encoding="utf-8") == "home"
 
 
-def test_a_missing_config_dir_and_a_redirected_id_are_refused(world: World, capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_missing_config_dir_and_a_different_folder_for_an_existing_id_are_refused(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     assert add(world, "claude-a", "claude", "--config-dir", "~/missing") == 1
     assert says(capsys) == ("", OLD_FOLDER + "\n")
     assert not settings_path(world.home).exists()
@@ -162,8 +164,20 @@ def test_a_missing_config_dir_and_a_redirected_id_are_refused(world: World, caps
     before = world.settings_bytes()
     capsys.readouterr()
     assert add(world, "claude-a", "claude", "--config-dir", str(world.base)) == 1
-    assert says(capsys) == ("", "account 'claude-a' already exists\n")
+    assert says(capsys) == ("", "account 'claude-a' already has its folder; legion add claude <folder> copies a folder into a new account\n")
     assert world.settings_bytes() == before
+
+
+def test_a_target_with_files_is_refused_and_the_source_stays(world: World, capsys: pytest.CaptureFixture[str]) -> None:
+    folder = world.base / "existing"
+    folder.mkdir()
+    (folder / "a.txt").write_text("a", encoding="utf-8")
+    world.folder("codex-a").mkdir(parents=True)
+    (world.folder("codex-a") / "other.txt").write_text("x", encoding="utf-8")
+    assert add(world, "codex-a", "codex", "--config-dir", str(folder)) == 1
+    assert "already has files" in says(capsys)[1]
+    assert not settings_path(world.home).exists()
+    assert (folder / "a.txt").read_text(encoding="utf-8") == "a"
 
 
 @pytest.mark.parametrize(("account_id", "tool_id", "message"), [("Bad id", "codex", "id 'Bad id' must match ^[a-z][a-z0-9-]*$"), ("codex-a", "unknown-tool", "unknown tool 'unknown-tool'")])
@@ -229,18 +243,6 @@ def test_repeat_recovers_after_config_folder_creation_failed(world: World, monke
     assert "already done" not in says(capsys)[0]
 
 
-def test_repeat_still_refuses_a_missing_adopted_folder(world: World, capsys: pytest.CaptureFixture[str]) -> None:
-    folder = world.base / "adopted"
-    folder.mkdir()
-    assert add(world, "codex-a", "codex", "--config-dir", str(folder)) == 0
-    folder.rmdir()
-    before = world.settings_bytes()
-    capsys.readouterr()
-    assert add(world, "codex-a", "codex", "--config-dir", str(folder)) == 1
-    assert says(capsys) == ("", OLD_FOLDER + "\n")
-    assert world.settings_bytes() == before
-
-
 @pytest.mark.parametrize("interpreted", [False, True])
 def test_add_requires_executable_native_posix_target(world: World, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], interpreted: bool) -> None:
     command = world.base / ("custom.ps1" if interpreted else "custom-script")
@@ -251,7 +253,7 @@ def test_add_requires_executable_native_posix_target(world: World, monkeypatch: 
     if WINDOWS:
         real_access = _accounts.os.access
         monkeypatch.setattr(_accounts.os, "access", lambda path, mode: False if Path(path) == command and mode == _accounts.os.X_OK else real_access(path, mode))
-    words = ("add", "--id", "codex-a", "--tool", "codex", "--command", str(command), "--config-dir", str(world.base))
+    words = ("add", "--id", "codex-a", "--tool", "codex", "--command", str(command))
     if interpreted:
         assert account(world, *words) == 0
     else:
@@ -261,14 +263,10 @@ def test_add_requires_executable_native_posix_target(world: World, monkeypatch: 
 
 
 @pytest.mark.parametrize("verb", ["rename", "remove"])
-@pytest.mark.parametrize("failure", ["footprints", "settings"])
-def test_failed_account_change_can_be_retried(world: World, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], verb: str, failure: str) -> None:
+def test_failed_account_change_can_be_retried(world: World, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], verb: str) -> None:
     assert add(world) == 0
     assert add(world, "codex-b") == 0
     bind(world, "codex-a", "codex-b")
-    runtime = world.home / ".legion" / "runtime"
-    runtime.mkdir()
-    _footprints.add(world.home, "folder", runtime, "account:codex-a")
     before = world.settings_bytes()
     words = [verb, "--id", "codex-a", *(["--new-id", "codex-new"] if verb == "rename" else [])]
     capsys.readouterr()
@@ -277,69 +275,26 @@ def test_failed_account_change_can_be_retried(world: World, monkeypatch: pytest.
         raise OSError("fixture operation failed")
 
     with monkeypatch.context() as patch:
-        if failure == "footprints":
-            patch.setattr(_footprints, "lock", fail)
-        else:
-            patch.setattr(_settings_io, "save_locked", fail)
+        patch.setattr(_settings_io, "save_locked", fail)
         assert account(world, *words) == 1
     assert "fixture operation failed" in says(capsys)[1]
     assert world.settings_bytes() == before
     assert account(world, *words) == 0
     assert says(capsys)[1] == ""
     assert world.channels()[0]["accounts"] == (["codex-new", "codex-b"] if verb == "rename" else ["codex-b"])
-    if verb == "rename":
-        assert _footprints.read(world.home).entries[0].owners == ["account:codex-new"]
-    else:
-        assert _footprints.read(world.home).entries == []
-        assert not runtime.exists()
 
 
-def test_remove_retries_after_runtime_is_gone(world: World) -> None:
-    assert add(world) == 0
-    runtime = world.home / ".legion" / "runtime"
-    runtime.mkdir()
-    _footprints.add(world.home, "folder", runtime, "account:codex-a")
-    runtime.rmdir()
-    assert account(world, "remove", "--id", "codex-a") == 0
-    assert world.agents() == []
-    assert _footprints.read(world.home).entries == []
-
-
-def test_remove_keeps_last_owner_runtime_when_settings_save_fails(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert add(world) == 0
-    runtime = world.home / ".legion" / "runtime"
-    runtime.mkdir()
-    _footprints.add(world.home, "folder", runtime, "account:codex-a")
-    before = world.settings_bytes()
-
-    def fail_save(*_args: object) -> None:
-        raise OSError("save failed")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(_settings_io, "save_locked", fail_save)
-        assert account(world, "remove", "--id", "codex-a") == 1
-
-    assert world.settings_bytes() == before
-    assert runtime.is_dir()
-    assert _footprints.read(world.home).entries[0].owners == ["account:codex-a"]
-
-
-def test_remove_validates_remaining_settings_before_deleting_footprints(world: World, capsys: pytest.CaptureFixture[str]) -> None:
+def test_remove_validates_remaining_settings(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     assert add(world) == 0
     bind(world, "codex-a")
     data = json.loads(world.settings_bytes())
     data["channels"][0]["accounts"].append("unknown-account")
     write_settings(world.home, data)
-    runtime = world.home / ".legion" / "runtime"
-    runtime.mkdir()
-    _footprints.add(world.home, "folder", runtime, "account:codex-a")
     before = world.settings_bytes()
     capsys.readouterr()
     assert account(world, "remove", "--id", "codex-a") == 1
     assert "unknown-account" in says(capsys)[1]
     assert world.settings_bytes() == before
-    assert runtime.is_dir()
-    assert _footprints.read(world.home).entries[0].owners == ["account:codex-a"]
 
 
 def test_an_account_whose_command_file_is_gone_needs_the_owner(world: World, capsys: pytest.CaptureFixture[str]) -> None:
@@ -361,19 +316,15 @@ def bind(world: World, *accounts: str) -> None:
     assert run(arguments) == 0
 
 
-def test_rename_moves_bindings_and_footprint_owners(world: World, capsys: pytest.CaptureFixture[str]) -> None:
+def test_rename_moves_bindings(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     assert add(world, "codex-a") == 0
     assert add(world, "codex-b") == 0
     bind(world, "codex-a", "codex-b")
-    extra = world.home / ".legion" / "extra"
-    extra.mkdir()
-    _footprints.add(world.home, "folder", extra, "account:codex-a")
     capsys.readouterr()
     assert account(world, "rename", "--id", "codex-a", "--new-id", "codex-new") == 0
     assert says(capsys) == (f"Config folder kept at {world.folder('codex-a')}; rename it yourself only if you want to.\n", "")
     assert [entry["id"] for entry in world.agents()] == ["codex-new", "codex-b"]
     assert world.channels()[0]["accounts"] == ["codex-new", "codex-b"]
-    assert [entry.owners for entry in _footprints.read(world.home).entries if entry.kind == "folder"] == [["account:codex-new"]]
 
 
 def test_a_repeated_rename_skips(world: World, capsys: pytest.CaptureFixture[str]) -> None:
@@ -425,19 +376,6 @@ def test_remove_prunes_the_binding_and_keeps_the_folder(world: World, capsys: py
     assert world.folder("codex-a").is_dir()
     assert account(world, "remove", "--id", "codex-a") == 0
     assert says(capsys) == ("skip: account remove codex-a (already done)\n", "")
-
-
-def test_remove_ends_the_footprint_owner_and_its_recorded_folder(world: World, capsys: pytest.CaptureFixture[str]) -> None:
-    assert add(world, "codex-a") == 0
-    runtime = world.home / ".legion" / "extra" / ".runtime"
-    (runtime / "bin").mkdir(parents=True)
-    (runtime / "bin" / "legion-foundry.ps1").write_text("old runner\n", encoding="utf-8")
-    _footprints.add(world.home, "folder", runtime, "account:codex-a")
-    capsys.readouterr()
-    assert account(world, "remove", "--id", "codex-a") == 0
-    assert says(capsys) == (f"Remove folder: {runtime}\nConfig folder kept at {world.folder('codex-a')}.\n", "")
-    assert not runtime.exists()
-    assert _footprints.read(world.home).entries == []
 
 
 def test_a_positional_id_is_a_usage_error(world: World, capsys: pytest.CaptureFixture[str]) -> None:

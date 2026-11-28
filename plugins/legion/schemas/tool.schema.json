@@ -355,6 +355,14 @@
           "pattern": "^(?![/\\\\]|[A-Za-z]:|~[/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$",
           "type": "string"
         },
+        "adoptRewrite": {
+          "items": {
+            "pattern": "^(?![/\\\\]|[A-Za-z]:)(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).*$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
         "marketplaceAdd": {
           "items": {
             "type": "string"

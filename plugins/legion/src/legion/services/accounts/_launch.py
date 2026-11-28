@@ -141,9 +141,12 @@ def run_account(account: str, arguments: list[str], home: Path, *, cwd: Optional
     path = command.provider_file[0] if command.provider_file else None
     ready = threading.Event()
     identity: psutil.Process | None = None
+    stopped = False
 
     def stop() -> None:
+        nonlocal stopped
         ready.wait()
+        stopped = True
         _end_child(identity)
 
     try:
@@ -170,7 +173,7 @@ def run_account(account: str, arguments: list[str], home: Path, *, cwd: Optional
                 reader.join(READER_SECONDS)
             if session:
                 print(f"legion: session id {session[0]}", file=sys.stderr, flush=True)
-            return code
+        return 0 if stopped else code
     finally:
         if path is not None:
             path.unlink(missing_ok=True)

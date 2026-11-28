@@ -162,7 +162,7 @@
       "configEnv": "COPILOT_HOME",
       "plugin": {
         "defaultConfigDir": "~/.copilot",
-        "installedRoot": "installed-plugins",
+        "installedRoot": "installed-plugins/ps-legion-marketplace/legion",
         "marketplaceAddRef": [
           "plugin",
           "marketplace",

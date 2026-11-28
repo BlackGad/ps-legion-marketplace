@@ -4,6 +4,7 @@
 import base64
 import fnmatch
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from legion.core import (
     _home,
     _run,
     _settings_io,
+    _stop_event,
     _validate,
 )
 from legion.core._atomic_write import atomic_write_bytes
@@ -29,7 +31,8 @@ from legion.core._settings_models import Agent, PersonalisationSettings
 
 WINDOWS = sys.platform == "win32"
 SETUP_QUESTION = "This repository is not set up. Set it up (private)? [Y/n]"
-PARENT_VARIABLES = ("NO_COLOR", "TERM", "CLAUDECODE", "CLAUDE_CODE_*", "LEGION_ROLE", "LEGION_TASK")
+PARENT_VARIABLES = ("NO_COLOR", "TERM", "CLAUDECODE", "CLAUDE_CODE_*", "LEGION_ROLE", "LEGION_TASK", "TELEGRAM_STATE_DIR", "TELEGRAM_BOT_TOKEN")
+CONVERSATION_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
 
 class OverseerError(Exception):
@@ -123,6 +126,8 @@ def _default_channel(settings: PersonalisationSettings, agent: Agent) -> tuple[s
 
 
 def _session(saved_session: str, agent: Agent, home: Path) -> tuple[str, bool]:
+    if agent.tool in ("codex", "copilot") and CONVERSATION_ID.fullmatch(saved_session):
+        return saved_session, True
     if agent.tool == "codex":
         return "last", bool(saved_session)
     if agent.tool != "claude":
@@ -132,6 +137,14 @@ def _session(saved_session: str, agent: Agent, home: Path) -> tuple[str, bool]:
     if saved_session and projects.is_dir() and any((folder / f"{saved_session}.jsonl").is_file() for folder in projects.iterdir()):
         return saved_session, True
     return str(uuid.uuid4()), False
+
+
+def _resume_arguments(tool: str, session: str) -> list[str]:
+    if tool == "claude":
+        return ["--resume", session]
+    if tool == "copilot":
+        return [f"--resume={session}"]
+    return ["resume", "--last" if session == "last" else session]
 
 
 def _launch(settings: PersonalisationSettings, agent: Agent, channels: tuple[str, ...], arguments: tuple[str, ...], session: str, resume: bool, repo: Path, home: Path) -> Launch:
@@ -170,7 +183,7 @@ def _launch(settings: PersonalisationSettings, agent: Agent, channels: tuple[str
             launch.bot_folder = str(folder)
             launch.bridge = [sys.executable, "-m", "legion.cli", "--home", str(home), "telegram", "bridge", "--channel", binding.id, "--repo", str(repo)]
     if resume:
-        launch.arguments.extend(["--resume", session] if agent.tool == "claude" else ["resume", "--last"])
+        launch.arguments.extend(_resume_arguments(agent.tool, session))
     elif agent.tool == "claude" and session:
         launch.arguments.extend(["--session-id", session])
     launch.arguments.extend([*arguments, *channel_args, *tool.overseer_args])
@@ -295,6 +308,8 @@ def run(
     save_last(repo, home, saved)
     click.echo(f"{'resuming' if resume else 'starting'} overseer: {selected.id}, channel {', '.join(channels) or 'none'}")
     code = start_launch(repo, launch, in_place=owner_launch)
+    if _stop_event.stop_raised(home):
+        return code
     if code:
         save_last(repo, home, saved.model_copy(update={"session": ""}))
         click.echo(f"the launch failed with exit code {code}", err=True)

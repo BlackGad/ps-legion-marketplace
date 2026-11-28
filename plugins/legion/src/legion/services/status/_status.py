@@ -7,92 +7,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 import psutil
-from pydantic import BaseModel, Field, JsonValue
 
 from legion.core import _process
 from legion.core._home import home_path
 from legion.core._settings_models import (
     ChannelDescriptor,
     PersonalisationSettings,
-    PluginManifest,
     ToolDescriptor,
 )
-from legion.services.installation._update import compare_versions
-from legion.core._validate import load_descriptors, read_text
+from legion.core._validate import load_descriptors
+from legion.services.lifecycle import _targets
 
 if TYPE_CHECKING:
     from legion.services.status import RepositoryStatus, StatusReport
-
-
-class MarketplaceSource(BaseModel):
-    source: str
-    path: Path
-
-
-class MarketplaceRegistration(BaseModel):
-    source: MarketplaceSource
-
-
-class CopilotMarketplaces(BaseModel):
-    legion: MarketplaceRegistration = Field(alias="ps-legion-marketplace")
-
-
-class CopilotSettings(BaseModel):
-    enabled_plugins: dict[str, JsonValue] = Field(alias="enabledPlugins")
-    marketplaces: CopilotMarketplaces = Field(alias="extraKnownMarketplaces")
-
-
-class MarketplacePlugin(BaseModel):
-    name: str
-    source: JsonValue
-
-
-class Marketplace(BaseModel):
-    plugins: list[MarketplacePlugin]
-
-
-def _copilot_manifest(folder: Path) -> Optional[Path]:
-    try:
-        settings = CopilotSettings.model_validate_json(read_text(folder / "settings.json"))
-        if "legion@ps-legion-marketplace" not in settings.enabled_plugins:
-            return None
-        source = settings.marketplaces.legion.source
-        if source.source != "directory":
-            return None
-        marketplace = Marketplace.model_validate_json(read_text(source.path / ".claude-plugin" / "marketplace.json"))
-        for plugin in marketplace.plugins:
-            if plugin.name == "legion" and isinstance(plugin.source, str):
-                return source.path / plugin.source / "plugin.json"
-    except (OSError, ValueError):
-        pass
-    return None
-
-
-def installed_version(folder: Path, tool: ToolDescriptor, name: str = "legion") -> Optional[str]:
-    root = tool.plugin.installed_root
-    if name == "wiki":
-        root = "installed-plugins/llm-wiki/wiki" if tool.id == "copilot" else "plugins/cache/llm-wiki/wiki"
-    files = list((folder / root).rglob("plugin.json")) if root else []
-    local = _copilot_manifest(folder) if name == "legion" and tool.id == "copilot" else None
-    if local is not None:
-        files = [local]
-    highest = None
-    for file in files:
-        try:
-            manifest = PluginManifest.model_validate_json(read_text(file))
-            if manifest.name != name:
-                continue
-            newer = compare_versions(manifest.version, highest or manifest.version) > 0
-            if highest is None or newer:
-                highest = manifest.version
-        except (OSError, ValueError):
-            pass  # Interrupted installs can leave incomplete manifests beside working versions.
-    return highest
-
-
-def _path_key(path: Path) -> str:
-    # Resolve linked ancestors before applying the platform's path comparer.
-    return os.path.normcase(str(path.resolve()))
 
 
 def repository_line(repository: RepositoryStatus) -> str:
@@ -128,8 +55,8 @@ def channel_warnings(settings: PersonalisationSettings, home: Path, tools: list[
         if len(matches) != 1:
             return []
         tool = matches[0]
-        folder = _path_key(home_path(os.environ[tool.config_env], home))
-        accounts = [agent for agent in settings.agents if agent.tool == tool.id and _path_key(home_path(agent.config_dir, home)) == folder]
+        folder = _targets.folder_key(home_path(os.environ[tool.config_env], home))
+        accounts = [agent for agent in settings.agents if agent.tool == tool.id and _targets.folder_key(_targets.account_folder(home, agent)) == folder]
         if len(accounts) != 1:
             return []
         descriptors = load_descriptors(ChannelDescriptor, "channel.json")
@@ -152,10 +79,12 @@ def status_lines(report: StatusReport) -> list[str]:
     if settings.state == "ok":
         lines = ["accounts", *(f"  {agent.id}  {agent.tool}  {agent.config_dir}  legion {agent.legion_version or 'missing'}" for agent in report.accounts)]
     elif settings.state == "missing":
-        lines = ["no legion settings yet"]
+        lines = ["no legion settings yet. Run legion add <tool> to add an account."]
     else:
         problem = "cannot be read" if settings.state == "unreadable" else "are not valid"
         lines = [f"legion settings {problem}: {settings.path}; run legion setup"]
+    if report.outlanders:
+        lines.extend(["outlanders", *(f"  {row.tool}  {row.config_dir}  legion {row.legion_version or 'missing'}" for row in report.outlanders)])
     lines.extend(f"channels {channel.id} ({channel.kind}) -> {', '.join(channel.accounts)}" for channel in report.channels)
     knowledge = report.knowledge
     lines.append(f"knowledge: {'off (not asked)' if knowledge.state == 'off' else knowledge.state}")

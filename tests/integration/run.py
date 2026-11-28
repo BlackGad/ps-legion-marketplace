@@ -39,6 +39,8 @@ WIKI_COMMIT = "35d37c5591c7585643196333edd83922e7bbc757"
 ENDPOINT = "https://example-resource.cognitiveservices.azure.com"
 WINDOWS = sys.platform == "win32"
 CODEX_PROBE_SECONDS = 120
+INSTALLATION_NO_CHANGES = "Nothing to do. Legion is already installed for the available targets."
+UPDATE_NO_CHANGES = "Nothing to do. Legion is already up to date."
 
 
 @dataclass
@@ -403,6 +405,7 @@ class Runner:
         output = result.stdout.rstrip()
         self.log.append(output)
         if check and result.returncode:
+            print(f"{Path(argv[0]).name} exited {result.returncode}:", output, sep=chr(10), file=sys.stderr, flush=True)
             raise RuntimeError(f"{Path(argv[0]).name} exited {result.returncode}\n{output}")
         return output
 
@@ -576,43 +579,63 @@ class Runner:
         require(self.tool_version() is None, "bootstrap preview populated the fresh uv tool fixture")
         return output + "\n" + self.run([str(self.uv), "--version"])
 
-    def install_legion(self, tool: str) -> str:
-        source, ref = self.targets.get(tool, (str(self.checkout), "release"))
-        args = ["install", "--tool", tool, "--source", source, "--yes"]
-        if ref == "main":
-            args += ["--ref", "main"]
-        return self.legion(*args)
+    def install_legion(self, source: str, ref: str = "release") -> str:
+        return self.legion("install", "--source", source, "--ref", ref, "--yes")
+
+    def local_source_refusals(self, output: str) -> set[str]:
+        # Install continues past failed targets. Only an explicit local-source refusal can be skipped.
+        failed = [line.split() for line in output.splitlines() if "  failed: " in line]
+        refused = set()
+        for row in failed:
+            tool = row[0]
+            command = self.catalog.get(tool, {}).get("command")
+            reason = " ".join(row).split(" failed: ", 1)[-1]
+            refusal = re.search(
+                r"(local (path|folder|directory|source|marketplace)|filesystem|directory source).{0,80}(not supported|unsupported|not allowed|not permitted|cannot|refus|rejected)",
+                reason,
+                re.IGNORECASE,
+            )
+            require(bool(command and re.match(rf"{re.escape(command)} exited \d+", reason) and refusal), output)
+            refused.add(tool)
+        return refused
+
+    def install_targets(self, *, repeat: bool) -> str:
+        source = str(self.checkout)
+        try:
+            output = self.install_legion(source)
+        except RuntimeError as error:
+            output = str(error)
+            refused = self.local_source_refusals(output)
+            if not refused or any(tool not in self.not_tested and self.targets[tool][1] != "main" for tool in refused):
+                raise
+            if repeat:
+                contains(output, f"skip: legion command {self.tool_version()} (already done)")
+            return output
+        if repeat:
+            require(output == INSTALLATION_NO_CHANGES, output)
+        return output
 
     def install_first(self) -> str:
-        lines, errors = [], []
-        for tool in TOOLS:
-            try:
-                lines.append(self.install_legion(tool))
-                self.targets[tool] = (str(self.checkout), "release")
-            except RuntimeError as error:
-                message = str(error)
-                command = self.catalog[tool]["command"]
-                # Hand-built, reason: only a CLI's own local-source refusal may be skipped or retried from main.
-                refusal = re.search(
-                    r"(local (path|folder|directory|source|marketplace)|filesystem|directory source).{0,80}(not supported|unsupported|not allowed|not permitted|cannot|refus|rejected)",
-                    message,
-                    re.IGNORECASE,
-                )
-                if not (re.search(rf"\b{re.escape(command)} exited \d+", message) and refusal):
-                    errors.append(f"{tool}: {message}")
-                    continue
-                if not self.fallback:
-                    self.not_tested[tool] = f"{tool} refuses a local folder and was not tested from the checkout: {message.splitlines()[0]}"
-                    lines.append("skip: " + self.not_tested[tool])
-                    continue
-                revision = self.run(["git", "-C", str(self.checkout), "rev-parse", "HEAD"])
-                remote = self.run(["git", "-C", str(self.checkout), "ls-remote", "origin", "refs/heads/main"]).split()[0]
-                require(remote == revision, f"{tool} needs published source but main differs: checkout {revision}, main {remote}")
-                self.targets[tool] = (MARKETPLACE, "main")
-                lines.append(self.install_legion(tool))
-                later = self.run(["git", "-C", str(self.checkout), "ls-remote", "origin", "refs/heads/main"]).split()[0]
+        source = str(self.checkout)
+        self.targets.update(dict.fromkeys(TOOLS, (source, "release")))
+        try:
+            output = self.install_legion(source)
+        except RuntimeError as error:
+            output = str(error)
+            refused = self.local_source_refusals(output)
+            if not refused:
+                raise
+            if self.fallback:
+                revision = self.run(["git", "-C", source, "rev-parse", "HEAD"])
+                remote = self.run(["git", "-C", source, "ls-remote", "origin", "refs/heads/main"]).split()[0]
+                require(remote == revision, f"Published source needs main to match the checkout: {revision}, main {remote}")
+                output += "\n" + self.install_legion(MARKETPLACE, "main")
+                later = self.run(["git", "-C", source, "ls-remote", "origin", "refs/heads/main"]).split()[0]
                 require(later == revision, f"main moved during install: {revision} -> {later}")
-        require(not errors, "\n".join(errors))
+                self.targets.update(dict.fromkeys(refused, (MARKETPLACE, "main")))
+            else:
+                self.not_tested.update({tool: f"{tool} refuses a local marketplace folder" for tool in refused})
+                output += "".join(f"\nskip: {self.not_tested[tool]}" for tool in sorted(refused))
         require(bool(self.active()), "; ".join(self.not_tested.values()))
         expected = json.loads((self.checkout / "plugins/legion/plugin.json").read_text(encoding="utf-8"))["version"]
         self.check_tool(expected)
@@ -626,8 +649,9 @@ class Runner:
             require(self.version(tool, self.folder(tool)) == expected, f"{tool} plugin version is wrong")
         if "codex" in self.active():
             self.check_codex_mcp()
+        self.legion("status")
         self.state["snapshot"] = self.home_snapshot()
-        return "\n".join(lines)
+        return output
 
     def check_codex_mcp(self) -> None:
         """The installed plugin must bring a connected legion MCP server that Codex lists, asked without login or model turn."""
@@ -645,10 +669,9 @@ class Runner:
         require(codex_legion_server(servers) is not None, "Codex does not list a connected legion MCP server with the status tool")
 
     def install_repeat(self) -> str:
-        lines = "\n".join(self.install_legion(tool) for tool in self.active())
-        contains(lines, f"skip: legion command {self.tool_version()} (already done)")
+        output = self.install_targets(repeat=True)
         unchanged(self.state["snapshot"], self.home_snapshot())
-        return lines
+        return output
 
     def update(self, repeat: bool) -> str:
         expected = json.loads((self.checkout / "plugins/legion/plugin.json").read_text(encoding="utf-8"))["version"]
@@ -666,18 +689,29 @@ class Runner:
             output = self.legion("update", "--yes", owner=True)
         else:
             source, ref = self.targets[target]
-            arguments = ["install", "--update", "--source", source]
+            arguments = ["update", "--source", source]
             if ref == "main":
                 arguments += ["--ref", "main"]
-            output = self.legion(*arguments, "--yes", owner=True)
+            try:
+                output = self.legion(*arguments, "--yes", owner=True)
+            except RuntimeError as error:
+                output = str(error)
+                refused = self.local_source_refusals(output)
+                if not refused or refused - self.not_tested.keys():
+                    raise
         if not repeat:
-            contains(output, f"legion not installed -> {expected}")
-        for tool in self.active():
-            contains(output, f"Update legion for {tool}")
+            restored = rf"^{re.escape(target)}\s+{re.escape(str(self.folder(target)))}\s+installed legion {re.escape(expected)}$"
+            require(re.search(restored, output, re.MULTILINE) is not None, output)
+        elif all(self.targets[tool][1] != "main" for tool in active):
+            require(output == UPDATE_NO_CHANGES, output)
+        else:
+            contains(output, "already done")
+        for tool in active:
+            if not repeat:
+                contains(output, f"Update legion for {tool}")
             require(self.version(tool, self.folder(tool)) == expected, f"{tool} version changed away from the checkout")
             require(self.installed_source_matches(tool, self.folder(tool)), f"{tool} update did not keep the PR checkout source")
         if repeat:
-            contains(output, "already up to date")
             unchanged(self.state["update_snapshot"], self.home_snapshot(update=True))
         else:
             self.state["update_snapshot"] = self.home_snapshot(update=True)
@@ -745,11 +779,11 @@ class Runner:
                 "GIT_CONFIG_VALUE_2": "true",
             }
         )
+        # Copilot fetches GitHub marketplaces itself. Register its live directory marketplace first.
+        copilot = upgrade.catalog["copilot"]["plugin"]
+        upgrade.cli("copilot", [word.replace("{source}", release.as_posix()) for word in copilot["marketplaceAdd"]])
+        upgrade.install_legion(MARKETPLACE)
         for tool in TOOLS:
-            # Copilot fetches GitHub marketplaces itself. Its live directory marketplace uses the fixture directly.
-            source = str(release) if tool == "copilot" else MARKETPLACE
-            upgrade.targets[tool] = (source, "release")
-            upgrade.install_legion(tool)
             require(upgrade.version(tool, upgrade.folder(tool)) == current, f"{tool} did not install {current}")
         upgrade.check_tool(current)
         require(upgrade.installed_click() == pin, f"legion {current} did not install Click {pin}")
@@ -1073,23 +1107,6 @@ asyncio.run(main())
         require(not self.listing(tool, folder, include_disabled=True), f"{tool} still lists legion in {folder}")
         require(not self.listing(tool, folder, "marketplace"), f"{tool} marketplace remains in {folder}")
 
-    def uninstall_scoped(self, repeat: bool) -> str:
-        target = self.active()[0]
-        folder = self.folder(target)
-        version = self.tool_version()
-        if version is None:
-            raise AssertionError("legion is missing from uv before scoped uninstall")
-        output = self.legion("uninstall", "--tool", target, "--config-dir", str(folder), "--yes", owner=True)
-        self.check_uninstalled(target, folder)
-        self.check_tool(version)
-        require((self.tool_dir / "legion").is_dir(), "scoped uninstall removed the uv environment")
-        for tool, other in self.targets_for_uninstall():
-            if (tool, other) != (target, folder):
-                require(self.listing(tool, other), f"scoped uninstall removed legion from {tool} in {other}")
-        if repeat:
-            contains(output, "skip: uninstall (already done)")
-        return output
-
     def uninstall(self, repeat: bool) -> str:
         targets = self.targets_for_uninstall() if not repeat else []
         output = self.legion("uninstall", "--yes", owner=not repeat)
@@ -1106,11 +1123,12 @@ asyncio.run(main())
         return output
 
     def reinstall(self, repeat: bool) -> str:
-        output = "\n".join(self.install_legion(tool) for tool in self.active())
+        output = self.install_targets(repeat=repeat)
+        if any(ref == "main" for _, ref in self.targets.values()) and not repeat:
+            output += "\n" + self.install_legion(MARKETPLACE, "main")
         expected = json.loads((self.checkout / "plugins/legion/plugin.json").read_text(encoding="utf-8"))["version"]
         self.check_tool(expected)
         if repeat:
-            contains(output, f"skip: legion command {expected} (already done)")
             unchanged(self.state["snapshot"], self.home_snapshot())
         else:
             for tool, folder in self.targets_for_uninstall():
@@ -1128,7 +1146,7 @@ asyncio.run(main())
         else:
             output = self.legion("uninstall", "--purge", "--yes")
         if repeat:
-            contains(output, "skip: uninstall (already done)")
+            contains(output, "skip: purge (already done)")
         wait_gone(self.home / ".legion")
         self.check_tool_removed()
         for tool, folder in self.state["purge_targets"]:
@@ -1234,15 +1252,22 @@ asyncio.run(main())
             require(not self.listing(tool, folder, include_disabled=True, wanted=WIKI_PLUGIN), f"{tool} still lists the wiki plugin")
             require(not self.listing(tool, folder, "marketplace", wanted=WIKI_MARKETPLACE), f"{tool} still lists the wiki marketplace")
 
+    def restore_wiki_accounts(self) -> None:
+        # Restore the checkout copies before setup so it can apply the knowledge choice offline.
+        self.install_legion(str(self.checkout))
+        for tool, folder in self.wiki_accounts():
+            require(self.listing(tool, folder), f"{tool} did not reinstall Legion in {folder}")
+
     def knowledge_off(self, repeat: bool) -> str:
         if not repeat:
-            self.legion("setup", "--knowledge")
+            self.restore_wiki_accounts()
+            self.legion("setup", "--knowledge", "--yes")
             self.check_wiki(WIKI_TAG)
         hub = self.home / ".legion/knowledge"
         pointer = self.home / ".config/llm-wiki/config.json"
         before = self.home_snapshot() if repeat else snapshot(hub)
         pointer_before = pointer.read_bytes()
-        output = self.legion("setup", "--no-knowledge")
+        output = self.legion("setup", "--no-knowledge", "--yes")
         if repeat:
             contains(output, "skip: knowledge declined (already done)")
             unchanged(before, self.home_snapshot())
@@ -1269,10 +1294,8 @@ asyncio.run(main())
 
     def knowledge_declined(self, repeat: bool) -> str:
         if not repeat:
-            self.legion("setup", "--no-knowledge")
-            for tool, folder in self.wiki_accounts():
-                self.legion("install", "--tool", tool, "--config-dir", str(folder), "--source", str(self.checkout), "--yes")
-                require(self.listing(tool, folder), f"{tool} did not reinstall Legion for the declined case")
+            self.restore_wiki_accounts()
+            self.legion("setup", "--no-knowledge", "--yes")
             self.manual_wiki()
         status = json.loads(self.legion("status", "--json"))["knowledge"]
         require(status["state"] == "declined", f"wiki choice was not declined: {status}")
@@ -1287,7 +1310,7 @@ asyncio.run(main())
         hub = self.home / ".legion/knowledge"
         before = snapshot(hub)
         output = self.legion("uninstall", "--purge", answers="y\nn\n")
-        contains(output, "Purge legion and all its data now? [y/N]")
+        contains(output, "Apply? [y/N]")
         contains(output, "Also delete the knowledge hub in ~/.legion/knowledge? [y/N]")
         wait_gone(self.home / ".legion/configuration")
         self.check_tool_removed()
@@ -1316,7 +1339,6 @@ asyncio.run(main())
             ("channel", self.channel),
             ("foundry-launch", self.foundry),
             ("no-pwsh", self.no_pwsh),
-            ("uninstall-scoped", self.uninstall_scoped),
             ("uninstall", self.uninstall),
             ("reinstall", self.reinstall),
             ("update-uv-tool", self.update_uv_tool),

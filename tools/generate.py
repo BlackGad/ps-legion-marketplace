@@ -87,7 +87,8 @@ def render_tools_index(skills: Path) -> str:
             "id": tool.id,
             "command": tool.command,
             "configEnv": tool.config_env,
-            "plugin": source["plugin"],
+            # 0.23.1 reads this catalog when given a checkout. Adoption reads the descriptor.
+            "plugin": {key: value for key, value in source["plugin"].items() if key != "adoptRewrite"},
             "hooks": source["hooks"],
             "installHint": tool.install.hint,
         }

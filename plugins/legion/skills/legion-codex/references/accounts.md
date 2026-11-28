@@ -1,12 +1,12 @@
 # Codex CLI accounts
 
-Add and adopt through `legion add`, as [create.md](../../legion-personalisation/references/create.md) describes, and follow the [shared account rules](../../legion-personalisation/references/fields.md#account-setup). For a new folder the owner logs in once by starting `codex` with `CODEX_HOME` set to the account's folder; setup's `log in:` column shows the command. Never handle tokens or credential files.
+Add and copy a folder through `legion add`, as [create.md](../../legion-personalisation/references/create.md) describes, and follow the [shared account rules](../../legion-personalisation/references/fields.md#account-setup). For a new folder the owner logs in once by starting `codex` with `CODEX_HOME` set to the account's folder; setup's `log in:` column shows the command. Never handle tokens or credential files.
 
 ## Foundry agent
 
 Codex is **not yet proven against Foundry**. Use this flow when GPT access exists and the owner wants to verify it. It replaces the subscription login flow above. One agent uses one endpoint. Use `legion --home <home>` for an alternate home.
 
-Use these commands for a Foundry provider configuration request; ordinary setup can adopt an existing folder and keep its provider settings. Ask the model question and discover deployments as [Foundry model mapping](../../legion-personalisation/references/foundry-models.md) says. These examples show explicit choices:
+Use these commands for a Foundry provider configuration request; ordinary setup can copy an existing folder and keep its provider settings. Ask the model question and discover deployments as [Foundry model mapping](../../legion-personalisation/references/foundry-models.md) says. These examples show explicit choices:
 
 ```powershell
 legion account add --id <id> --tool codex --provider foundry --endpoint https://<resource>.cognitiveservices.azure.com --deployment gpt-x --default gpt-x

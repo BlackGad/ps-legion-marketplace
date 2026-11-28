@@ -28,7 +28,7 @@ def test_purge_retries_after_a_locked_file(tmp_path: Path, monkeypatch: pytest.M
 
     monkeypatch.setattr(_handover, "_remove", remove_after_pause)
     monkeypatch.setattr(_handover.time, "sleep", pauses.append)
-    _handover._purge(file)
+    _handover.purge_folder(file)
     assert pauses == [1]
     assert not file.exists()
 
@@ -57,7 +57,7 @@ def test_start_runs_base_python_detached_and_prepares_the_log(tmp_path: Path, mo
     _handover.start(["uv", "tool", "uninstall", "legion"], [stop], purge=[tmp_path / ".legion"], log=log)
     ((command, options),) = started
     assert command[:3] == [getattr(sys, "_base_executable", sys.executable), "-I", "-c"]
-    assert json.loads(command[4]) == [[os.getpid()], _handover.UV_WAIT_SECONDS, [str(stop)], [str(tmp_path / ".legion")], ["uv", "tool", "uninstall", "legion"], str(log)]
+    assert json.loads(command[4]) == [[os.getpid()], _handover.UV_WAIT_SECONDS, [str(stop)], [str(tmp_path / ".legion")], ["uv", "tool", "uninstall", "legion"], str(log), None]
     assert options["stdin"] == options["stdout"] == options["stderr"] == subprocess.DEVNULL
     assert log.is_file()
     assert ("creationflags" in options) if WINDOWS else options["start_new_session"] is True
@@ -73,7 +73,7 @@ def test_cleanup_only_purge_starts_when_it_cannot_create_the_log(tmp_path: Path,
     _handover.start([], [], purge=[folder], log=folder / "temp/uv-tool.log")
 
     (command,) = started
-    assert json.loads(command[4])[-3:] == [[str(folder)], [], None]
+    assert json.loads(command[4])[-4:] == [[str(folder)], [], None, None]
 
 
 @pytest.mark.parametrize(("exit_code", "purge"), [(0, False), (2, False), (0, True), (2, True), (None, True), ("missing", True)])
